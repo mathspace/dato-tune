@@ -2,7 +2,7 @@ import logging
 import os
 from configparser import ConfigParser, ExtendedInterpolation
 from pathlib import Path
-from typing import Dict
+from typing import Dict, TextIO
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -148,6 +148,7 @@ def get_result(
     granularity,
     original_questions_dificulties: Dict[str, float],
     file_path=None,
+    outfile: TextIO | None = None,
 ):
     estimated_mastery = (
         train_result.groupby([ColumnMapping.student_id, granularity], as_index=False)
@@ -185,6 +186,10 @@ def get_result(
         estimated_difficulty["CalibratedDifficulty"]
         - estimated_difficulty["OriginalDifficulty"]
     ).abs()
+
+    if outfile:
+        estimated_difficulty.to_csv(outfile, index=False)
+        logging.info("estimated difficulty saved to outfile")
 
     if file_path:
         mastery_file = os.path.join(file_path, "estimated_mastery.csv")
@@ -287,7 +292,7 @@ def get_questions_difficulties(df) -> Dict[str, float]:
     }
 
 
-def run(config: ConfigParser):
+def run(config: ConfigParser, df: pd.DataFrame, outfile: TextIO):
     inference_config = config["inference"]
 
     result_folder = Path(inference_config["result_folder"])
@@ -305,9 +310,7 @@ def run(config: ConfigParser):
 
     np.random.seed(random_seed)
 
-    data_loader = DataLoader(config)
-
-    qa_history = load_inference_data(data_loader)
+    qa_history = df
     qa_history = mi.remove_groups_with_insufficient_data(
         qa_history, [ColumnMapping.question_id], min_obs
     )
@@ -345,6 +348,7 @@ def run(config: ConfigParser):
         granularity_col,
         original_questions_dificulties=original_difficulties,
         file_path=result_folder,
+        outfile=outfile,
     )
     auc_train = roc_plot(
         df_estimation,
