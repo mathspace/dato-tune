@@ -2,10 +2,32 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from contextlib import nullcontext
 from datetime import date, datetime
 from typing import TextIO
+
+
+def setup_logging(logfile: str | None = None):
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    logger.handlers.clear()
+
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(logging.INFO)
+    stderr_handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    logger.addHandler(stderr_handler)
+
+    if logfile:
+        logging.info(f"Logging to file: {logfile}")
+        file_handler = logging.FileHandler(logfile)
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s:%(levelname)s:%(message)s")
+        )
+        logger.addHandler(file_handler)
 
 
 def run_fetch_data(
@@ -39,6 +61,16 @@ def _yyyy_mm_dd_date(x: str):
 
 
 def main():
+    config = ConfigParser(
+        interpolation=ExtendedInterpolation(), default_section="common"
+    )
+    if not config.read("config.ini"):
+        raise RuntimeError(
+            "config.ini not found -- run `cp config.ini.example config.ini` to create it"
+        )
+
+    setup_logging(config["common"].get("logfile", None))
+
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
 
