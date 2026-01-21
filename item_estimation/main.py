@@ -4,11 +4,16 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from configparser import ConfigParser, ExtendedInterpolation
 from contextlib import nullcontext
 from datetime import date, datetime
 from typing import TextIO
 
+import pandas as pd
+
 from item_estimation.fetch import fetch_lantern_responses_from_snowflake
+from item_estimation.load_data import preprocess_qa_df
+from item_estimation.run_inference import run
 
 
 def setup_logging(logfile: str | None = None):
@@ -44,9 +49,11 @@ def run_validate_data(infile: TextIO, curriculum_id: int):
     pass
 
 
-def run_inference(infile: TextIO, outfile: TextIO, curriculum_id: int):
-    print(f"Running inference for curriculum_id: {curriculum_id}")
-    pass
+def run_inference(
+    config: ConfigParser, infile: TextIO, outfile: TextIO, curriculum_id: int
+):
+    df = preprocess_qa_df(pd.read_csv(infile), curriculum_id, add_default_values=False)
+    run(config, df, outfile)
 
 
 def _input_file_context(filename: str):
@@ -111,7 +118,7 @@ def main():
             _input_file_context(args.infile) as infile,
             _output_file_context(args.outfile) as outfile,
         ):
-            run_inference(infile, outfile, args.curriculum_id)
+            run_inference(config, infile, outfile, args.curriculum_id)
     else:
         parser.error(f"Invalid command: {args.command}")
 
