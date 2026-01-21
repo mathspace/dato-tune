@@ -30,7 +30,7 @@ def run_mle(
 ):
     df = train_data.copy()
     # add default value as initial value of optimisation
-    for (col, default_value) in zip(
+    for col, default_value in zip(
         [ColumnMapping.mastery, ColumnMapping.difficulty, ColumnMapping.discrimination],
         [0.0, 0.0, 1.0],
     ):

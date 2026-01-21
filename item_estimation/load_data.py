@@ -26,7 +26,9 @@ class DataLoader:
         df = pd.concat([pd.read_csv(csv_file) for csv_file in csv_files])
         logging.info(f"All {len(csv_files)} CSV files successfully loaded.")
         logging.info(f"Preprocessing resulted dataframe with {len(df)} rows.")
-        df = preprocess_qa_df(df, curriculum_id, add_default_values=add_default_values,  **kwargs)
+        df = preprocess_qa_df(
+            df, curriculum_id, add_default_values=add_default_values, **kwargs
+        )
         logging.info(f"Final dataframe has {len(df)} rows.")
         return df
 
@@ -207,9 +209,9 @@ def load_teacher_difficulty(file_name):
 def load_estimated_difficulty(file_name):
     df = pd.read_csv(file_name, index_col=0)
     for col in ["difficulty", "discrimination", "question_id"]:
-        assert (
-            col in df.columns
-        ), f"load_estimated_difficulty: {col} not found in {file_name}!"
+        assert col in df.columns, (
+            f"load_estimated_difficulty: {col} not found in {file_name}!"
+        )
     logging.info(
         f"load_estimated_difficulty: loading estimated difficulty from {file_name}"
     )
@@ -240,9 +242,9 @@ def load_knowledge_graph(file_name):
 def load_enriched_difficulty(file_name):
     df = pd.read_csv(file_name, index_col=0)
     for col in ["difficulty", "discrimination", "question_id"]:
-        assert (
-            col in df.columns
-        ), f"load_enriched_difficulty: {col} not found in {file_name}!"
+        assert col in df.columns, (
+            f"load_enriched_difficulty: {col} not found in {file_name}!"
+        )
     logging.info(
         f"load_enriched_difficulty: loading enriched difficulty from {file_name}"
     )
