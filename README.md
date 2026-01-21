@@ -27,6 +27,7 @@ Fetch student response data for a specific curriculum and date range:
 
 ```bash
 uv run item_estimation/main.py fetch \
+  --region us \
   --curriculum-id 15 \
   --outfile lantern_responses.csv \
   --begin-date 2025-10-01 \

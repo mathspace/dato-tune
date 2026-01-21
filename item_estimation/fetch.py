@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from datetime import date
 from textwrap import dedent
-from typing import assert_type
+from typing import Literal, assert_type
 
 import pandas as pd
 
@@ -15,11 +15,14 @@ logger = logging.getLogger(__name__)
 
 
 def fetch_lantern_responses_from_snowflake(
-    curriculum_id: int, begin_date: date, end_date: date
+    curriculum_id: int, region: Literal["au", "us"], begin_date: date, end_date: date
 ) -> pd.DataFrame:
     assert_type(curriculum_id, int)
     assert_type(begin_date, date)
     assert_type(end_date, date)
+
+    account_name = "oua13326" if region == "us" else "pn30490.ap-southeast-2"
+
     query = dedent(f"""
         SELECT
             student_id,
@@ -44,6 +47,8 @@ def fetch_lantern_responses_from_snowflake(
         try:
             cmd = [
                 "snowsql",
+                "--accountname",
+                account_name,
                 "--authenticator",
                 "externalbrowser",
                 "--warehouse",

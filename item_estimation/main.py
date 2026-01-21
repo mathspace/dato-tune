@@ -38,9 +38,11 @@ def setup_logging(logfile: str | None = None):
 
 
 def run_fetch_data(
-    outfile: TextIO, curriculum_id: int, begin_date: date, end_date: date
+    outfile: TextIO, curriculum_id: int, region: str, begin_date: date, end_date: date
 ):
-    df = fetch_lantern_responses_from_snowflake(curriculum_id, begin_date, end_date)
+    df = fetch_lantern_responses_from_snowflake(
+        curriculum_id, region, begin_date, end_date
+    )
     df.to_csv(outfile)
 
 
@@ -86,6 +88,13 @@ def main():
     _ = fetch_parser.add_argument("--outfile", type=str, default="-")
     _ = fetch_parser.add_argument("--curriculum-id", type=int, required=True)
     _ = fetch_parser.add_argument(
+        "--region",
+        type=str,
+        choices=["us", "au"],
+        required=True,
+        help="Region for Snowflake account: 'us' or 'au'",
+    )
+    _ = fetch_parser.add_argument(
         "--begin-date",
         type=_yyyy_mm_dd_date,
         required=True,
@@ -109,7 +118,9 @@ def main():
 
     if args.command == "fetch":
         with _output_file_context(args.outfile) as outfile:
-            run_fetch_data(outfile, args.curriculum_id, args.begin_date, args.end_date)
+            run_fetch_data(
+                outfile, args.curriculum_id, args.region, args.begin_date, args.end_date
+            )
     elif args.command == "validate":
         with _input_file_context(args.infile) as infile:
             run_validate_data(infile, args.curriculum_id)
