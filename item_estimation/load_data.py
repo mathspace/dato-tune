@@ -14,22 +14,12 @@ class DataLoader:
         self.data_folder = Path(config.get("common", "data_folder"))
         self.result_folder = Path(config.get("common", "result_folder"))
 
-    def load_latern_responses(self, add_default_values=False, **kwargs):
-        prefix = (
-            f"{self.config.get('common', 'lantern_responses_csv_files_prefix')}*.csv"
-        )
-        curriculum_id = self.config.getint("common", "curriculum_id")
-        csv_files = sorted(self.data_folder.glob(prefix))
-        logging.info(
-            f"Loading {len(csv_files)} CSV files from {self.data_folder} with prefix {prefix}"
-        )
-        df = pd.concat([pd.read_csv(csv_file) for csv_file in csv_files])
-        logging.info(f"All {len(csv_files)} CSV files successfully loaded.")
-        logging.info(f"Preprocessing resulted dataframe with {len(df)} rows.")
+    def load_latern_responses(
+        self, df: pd.DataFrame, curriculum_id: int, add_default_values=False, **kwargs
+    ):
         df = preprocess_qa_df(
             df, curriculum_id, add_default_values=add_default_values, **kwargs
         )
-        logging.info(f"Final dataframe has {len(df)} rows.")
         return df
 
     def catalog_hierarchy(self, level="question_id"):
@@ -67,7 +57,9 @@ class DataLoader:
         # todo: use dataloader to minimize string file names
 
 
-def preprocess_qa_df(df, curriculum_id, add_default_values=True, **kwargs):
+def preprocess_qa_df(
+    df: pd.DataFrame, curriculum_id: int, add_default_values: bool = True, **kwargs
+) -> pd.DataFrame:
     df[ColumnMapping.score] = (df[ColumnMapping.result] == "CORRECT").astype(float)
     df[ColumnMapping.dummy] = 1
     df[ColumnMapping.completed_at] = pd.to_datetime(

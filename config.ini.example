@@ -6,8 +6,6 @@ tol = 0.1
 logfile = ./run.log
 show_graph = no
 random_seed = 8192
-lantern_responses_csv_files_prefix = # set the prefix of the csv files containing the responses
-curriculum_id = # id of the LanternCurriculum you want to filter for
 
 [inference]
 data_folder = ${common:data_folder}
