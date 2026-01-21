@@ -46,11 +46,6 @@ def run_fetch_data(
     df.to_csv(outfile)
 
 
-def run_validate_data(infile: TextIO, curriculum_id: int):
-    print(f"Validating data for curriculum_id: {curriculum_id}")
-    pass
-
-
 def run_inference(
     config: ConfigParser, infile: TextIO, outfile: TextIO, curriculum_id: int
 ):
@@ -105,10 +100,6 @@ def main():
         required=True,
     )
 
-    validate_parser = subparsers.add_parser("validate")
-    _ = validate_parser.add_argument("--infile", type=str, default="-")
-    _ = validate_parser.add_argument("--curriculum-id", type=int, required=True)
-
     inference_parser = subparsers.add_parser("infer")
     _ = inference_parser.add_argument("--infile", type=str, default="-")
     _ = inference_parser.add_argument("--outfile", type=str, default="-")
@@ -121,9 +112,6 @@ def main():
             run_fetch_data(
                 outfile, args.curriculum_id, args.region, args.begin_date, args.end_date
             )
-    elif args.command == "validate":
-        with _input_file_context(args.infile) as infile:
-            run_validate_data(infile, args.curriculum_id)
     elif args.command == "infer":
         with (
             _input_file_context(args.infile) as infile,
