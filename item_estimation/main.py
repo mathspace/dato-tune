@@ -8,6 +8,8 @@ from contextlib import nullcontext
 from datetime import date, datetime
 from typing import TextIO
 
+from item_estimation.fetch import fetch_lantern_responses_from_snowflake
+
 
 def setup_logging(logfile: str | None = None):
     logger = logging.getLogger()
@@ -33,9 +35,8 @@ def setup_logging(logfile: str | None = None):
 def run_fetch_data(
     outfile: TextIO, curriculum_id: int, begin_date: date, end_date: date
 ):
-    print(
-        f"Fetching data for curriculum_id: {curriculum_id}, begin_date: {begin_date}, end_date: {end_date}"
-    )
+    df = fetch_lantern_responses_from_snowflake(curriculum_id, begin_date, end_date)
+    df.to_csv(outfile)
 
 
 def run_validate_data(infile: TextIO, curriculum_id: int):
