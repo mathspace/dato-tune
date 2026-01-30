@@ -1,6 +1,6 @@
 # dato-tune
 
-Estimates difficulty of Lantern Questions using Item Response Theory.
+Estimates difficulty of Lantern Questions using Maximum Likelihood Estimation.
 
 ## Setup
 
