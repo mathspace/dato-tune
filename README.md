@@ -6,7 +6,7 @@ Estimates difficulty of Lantern Questions using Maximum Likelihood Estimation.
 
 1. Make sure you have installed:
 
-- [uv](https://docs.astral.sh/uv/)
+- [uv](https://docs.astral.sh/uv/) -- Must be at least version 0.9
 - [SnowSQL](https://docs.snowflake.com/en/user-guide/snowsql-install-config.html)
 
 2. Configure SnowSQL with your username in `~/.snowsql/config`:
