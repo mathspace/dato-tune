@@ -9,12 +9,18 @@ Estimates difficulty of Lantern Questions using Maximum Likelihood Estimation.
 - [uv](https://docs.astral.sh/uv/)
 - [SnowSQL](https://docs.snowflake.com/en/user-guide/snowsql-install-config.html)
 
-2. Install dependencies using uv:
+2. Configure SnowSQL with your username in `~/.snowsql/config`:
+```
+[connections]
+username = "<your_username>"
+```
+
+3. Install dependencies using uv:
 ```bash
 uv sync
 ```
 
-3. Create configuration file:
+4. Create configuration file:
 ```bash
 cp config.ini.example config.ini
 ```
