@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+
+from rich.logging import RichHandler
 from configparser import ConfigParser, ExtendedInterpolation
 from contextlib import nullcontext
 from datetime import date, datetime
@@ -17,14 +19,15 @@ from item_estimation.run_inference import run
 
 
 def setup_logging(logfile: str | None = None):
+    logging.captureWarnings(True)
+
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
     logger.handlers.clear()
 
-    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler = RichHandler(rich_tracebacks=True)
     stderr_handler.setLevel(logging.INFO)
-    stderr_handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
     logger.addHandler(stderr_handler)
 
     if logfile:
