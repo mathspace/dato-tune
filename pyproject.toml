@@ -1,22 +1,31 @@
-[tool.poetry]
-name = "poetry-demo"
+[project]
+name = "dato-tune"
 version = "0.1.0"
-description = ""
-authors = ["Alexander McKinlay <amckinlay@mathspace.com.au>"]
+description = "Add your description here"
 readme = "README.md"
+requires-python = ">=3.14"
+packages = ["item_estimation"]
+dependencies = [
+    "gitpython>=3.1.46",
+    "lightgbm>=4.6.0",
+    "matplotlib>=3.10.8",
+    "numba>=0.63.1",
+    "numpy>=2.3.5",
+    "pandas>=2.3.3",
+    "rich>=14.3.1",
+    "scikit-learn>=1.8.0",
+    "seaborn>=0.13.2",
+]
 
-[tool.poetry.dependencies]
-python = "^3.12"
-matplotlib = "^3.8.4"
-numpy = "^1.26.4"
-seaborn = "^0.13.2"
-scikit-learn = "^1.4.2"
-numba = "^0.59.1"
-ruff = "^0.3.7"
-lightgbm = "^4.3.0"
-gitpython = "^3.1.43"
-
+[dependency-groups]
+dev = [
+    "ruff>=0.14.13",
+]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["uv_build>=0.9.28,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "item_estimation"
+module-root = ""
