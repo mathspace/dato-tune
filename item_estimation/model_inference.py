@@ -220,10 +220,15 @@ def batch_item_estimation(data, default_values=None, **kwargs):
 
 
 def batch_mastery_estimation(
-    data, granularity_col=ColumnMapping.grade_strand_id, default_value=0.0, **kwargs
+    data, granularity_col=ColumnMapping.grade_strand_id, using_window_col=False, default_value=0.0, **kwargs
 ):
     mastery_step_size = kwargs.get("mastery_step_size", 1.0)
     mastery_limit = kwargs.get("mastery_limit", (-5.0, 5.0))
+
+    # Determine grouping columns
+    group_cols = [ColumnMapping.student_id, granularity_col]
+    if using_window_col is not None:
+        group_cols.append(ColumnMapping.window_index)
 
     def set_bounds(m0):
         return (
@@ -245,7 +250,7 @@ def batch_mastery_estimation(
         out[1] = opt_results.x
         return out
 
-    res = data.groupby([ColumnMapping.student_id, granularity_col]).apply(func)
+    res = data.groupby(group_cols).apply(func)
     df_res = pd.DataFrame(
         res.values.tolist(), columns=["success", ColumnMapping.mastery], index=res.index
     )
@@ -259,7 +264,7 @@ def batch_mastery_estimation(
     return pd.merge(
         data[cols],
         df_res.reset_index(),
-        on=[ColumnMapping.student_id, granularity_col],
+        on=group_cols,
         validate="m:1",
     )
 

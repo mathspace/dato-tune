@@ -26,7 +26,8 @@ class ColumnMapping:
     STRAND_ID
     DURATION
     RECOMMENDATION_REASON_KEYWORD
-    CREATED_AT"""
+    CREATED_AT
+    WINDOW_INDEX"""
 
     question_id = "QUESTION_PUBLIC_ID"
     student_id = "STUDENT_ID"
@@ -40,6 +41,7 @@ class ColumnMapping:
     discrimination = "discrimination"
     mastery = "mastery"
     p_correct = "p_correct"
+    window_index = "WINDOW_INDEX"
 
 
 def get_git_info():

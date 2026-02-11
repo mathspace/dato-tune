@@ -36,17 +36,23 @@ def run_mle(
     ):
         if col not in df.columns:
             df[col] = default_value
-    df = df[
-        [
-            ColumnMapping.student_id,
-            granularity,
-            ColumnMapping.question_id,
-            ColumnMapping.score,
-            ColumnMapping.difficulty,
-            ColumnMapping.discrimination,
-            ColumnMapping.mastery,
-        ]
+
+    # Select columns including window_col if provided
+    cols_to_keep = [
+        ColumnMapping.student_id,
+        granularity,
+        ColumnMapping.question_id,
+        ColumnMapping.score,
+        ColumnMapping.difficulty,
+        ColumnMapping.discrimination,
+        ColumnMapping.mastery,
     ]
+    using_window_col = ColumnMapping.window_index in df.columns
+    if using_window_col:
+        cols_to_keep.append(ColumnMapping.window_index)
+
+    df = df[cols_to_keep]
+
 
     likelihood = mi.total_likelihood(df)
     estimation_tracking = [(0, "item", likelihood), (0, "mastery", likelihood)]
@@ -60,6 +66,7 @@ def run_mle(
             )
 
         if infer_mastery:
+            df = mi.batch_mastery_estimation(df, granularity_col=granularity, using_window_col=using_window_col)
             df = mi.batch_mastery_estimation(df, granularity_col=granularity)
             likelihood = mi.total_likelihood(df)
             estimation_tracking.append((it + 1, "mastery", likelihood))
@@ -149,9 +156,15 @@ def get_result(
     original_questions_dificulties: Dict[str, float],
     file_path=None,
     outfile: TextIO | None = None,
+    using_window_col=False,
 ):
+    # Determine grouping columns for mastery
+    group_cols = [ColumnMapping.student_id, granularity]
+    if using_window_col:
+        group_cols.append(ColumnMapping.window_index)
+
     estimated_mastery = (
-        train_result.groupby([ColumnMapping.student_id, granularity], as_index=False)
+        train_result.groupby(group_cols, as_index=False)
         .agg(
             {
                 ColumnMapping.mastery: "mean",
@@ -203,7 +216,12 @@ def get_result(
     return estimated_mastery, estimated_difficulty
 
 
-def calc_test_result(estimated_mastery, estimated_difficulty, test_data, granularity):
+def calc_test_result(estimated_mastery, estimated_difficulty, test_data, granularity, using_window_col=False):
+    # Determine merge columns for mastery
+    merge_cols = [ColumnMapping.student_id, granularity]
+    if using_window_col:
+        merge_cols.append(ColumnMapping.window_index)
+
     # predict on the test data
     df = (
         test_data.drop(
@@ -212,7 +230,7 @@ def calc_test_result(estimated_mastery, estimated_difficulty, test_data, granula
             errors="ignore",
         )
         .merge(
-            estimated_mastery, on=[ColumnMapping.student_id, granularity], how="inner"
+            estimated_mastery, on=merge_cols, how="inner"
         )
         .merge(estimated_difficulty, on=[ColumnMapping.question_id], how="inner")
     )
@@ -311,8 +329,14 @@ def run(config: ConfigParser, df: pd.DataFrame, outfile: TextIO):
     np.random.seed(random_seed)
 
     qa_history = df
+    
+    group_cols = [ColumnMapping.student_id, granularity_col]
+    using_window_col = ColumnMapping.window_index in qa_history.columns
+    if using_window_col:
+        group_cols.append(ColumnMapping.window_index)
+    # Filter by student-granularity (across all windows)
     qa_history = mi.remove_groups_with_insufficient_data(
-        qa_history, [ColumnMapping.question_id], min_obs
+        qa_history, group_cols, min_obs
     )
     original_difficulties = get_questions_difficulties(qa_history)
     train_df, test_df = mi.split_train_test_data_on_group(
@@ -348,7 +372,8 @@ def run(config: ConfigParser, df: pd.DataFrame, outfile: TextIO):
         granularity_col,
         original_questions_dificulties=original_difficulties,
         file_path=result_folder,
-        outfile=outfile,
+        outfile=outfile_suffix,
+        using_window_col=using_window_col,
     )
     auc_train = roc_plot(
         df_estimation,
@@ -359,7 +384,7 @@ def run(config: ConfigParser, df: pd.DataFrame, outfile: TextIO):
     logging.info(f"training ROC AUC score is {auc_train}")
 
     test_df_estimated = calc_test_result(
-        trained_mastery, trained_difficulty, test_df, granularity_col
+        trained_mastery, trained_difficulty, test_df, granularity_col, using_window_col=using_window_col
     )
     auc_test = roc_plot(
         test_df_estimated,
