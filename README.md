@@ -29,7 +29,11 @@ cp config.ini.example config.ini
 
 ### Fetch Data from Snowflake
 
-Fetch student response data for a specific curriculum and date range:
+Fetch student response data for a specific curriculum. You can use either date range mode or windowed mode.
+
+#### Date Range Mode
+
+Fetch data for a specific date range:
 
 ```bash
 uv run item_estimation/main.py fetch \
@@ -38,6 +42,28 @@ uv run item_estimation/main.py fetch \
   --outfile lantern_responses.csv \
   --begin-date 2025-10-01 \
   --end-date 2025-12-31
+```
+
+#### Windowed Mode
+
+Fetch data using sliding 12-month windows with 6-month stride (each response may appear in multiple windows):
+
+```bash
+uv run item_estimation/main.py fetch \
+  --region us \
+  --curriculum-id 15 \
+  --outfile lantern_responses.csv \
+  --windowed
+```
+
+Or use the short flag:
+
+```bash
+uv run item_estimation/main.py fetch \
+  --region us \
+  --curriculum-id 15 \
+  --outfile lantern_responses.csv \
+  -w
 ```
 
 **Note:** A web browser will open automatically for Snowflake authentication. You'll need appropriate Snowflake access permissions.

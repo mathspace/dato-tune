@@ -13,7 +13,10 @@ from typing import TextIO
 
 import pandas as pd
 
-from item_estimation.fetch import fetch_lantern_responses_from_snowflake
+from item_estimation.fetch import (
+    fetch_lantern_repsonses_range,
+    fetch_lantern_responses_windowed,
+)
 from item_estimation.load_data import preprocess_qa_df
 from item_estimation.run_inference import run
 
@@ -41,20 +44,27 @@ def setup_logging(logfile: str | None = None):
 
 
 def run_fetch_data(
-    outfile: TextIO, curriculum_id: int, region: str, begin_date: date, end_date: date
+    outfile: TextIO,
+    curriculum_id: int,
+    region: str,
+    windowed: bool,
+    begin_date: date | None = None,
+    end_date: date | None = None,
 ):
-    df = fetch_lantern_responses_from_snowflake(
-        curriculum_id, region, begin_date, end_date
-    )
-    df.to_csv(outfile)
+    if windowed:
+        df = fetch_lantern_responses_windowed(curriculum_id, region)
+    else:
+        if begin_date is None or end_date is None:
+            raise ValueError("begin_date and end_date are required when not using windowed mode")
+        df = fetch_lantern_repsonses_range(curriculum_id, region, begin_date, end_date)
+    df.to_csv(outfile, index=False)
 
 
 def run_inference(
-    config: ConfigParser, infile: TextIO, outfile: TextIO, curriculum_id: int
+    config: ConfigParser, infile: TextIO, outfile_suffix: str, curriculum_id: int
 ):
     df = preprocess_qa_df(pd.read_csv(infile), curriculum_id, add_default_values=False)
-    run(config, df, outfile)
-
+    run(config, df, outfile_suffix)
 
 def _input_file_context(filename: str):
     return nullcontext(sys.stdin) if filename == "-" else open(filename, "r")
@@ -93,14 +103,22 @@ def main():
         help="Region for Snowflake account: 'us' or 'au'",
     )
     _ = fetch_parser.add_argument(
+        "--windowed",
+        "-w",
+        action="store_true",
+        help="Use windowed mode (sliding 12-month windows with 6-month stride)",
+    )
+    _ = fetch_parser.add_argument(
         "--begin-date",
         type=_yyyy_mm_dd_date,
-        required=True,
+        required=False,
+        help="Start date (YYYY-MM-DD), required if not using --windowed",
     )
     _ = fetch_parser.add_argument(
         "--end-date",
         type=_yyyy_mm_dd_date,
-        required=True,
+        required=False,
+        help="End date (YYYY-MM-DD), required if not using --windowed",
     )
 
     inference_parser = subparsers.add_parser("infer")
@@ -111,16 +129,25 @@ def main():
     args = parser.parse_args()
 
     if args.command == "fetch":
+        if not args.windowed and (args.begin_date is None or args.end_date is None):
+            parser.error("--begin-date and --end-date are required when not using --windowed")
+        if args.windowed and (args.begin_date is not None or args.end_date is not None):
+            parser.error("--begin-date and --end-date cannot be used with --windowed")
+
         with _output_file_context(args.outfile) as outfile:
             run_fetch_data(
-                outfile, args.curriculum_id, args.region, args.begin_date, args.end_date
+                outfile,
+                args.curriculum_id,
+                args.region,
+                args.windowed,
+                args.begin_date,
+                args.end_date,
             )
     elif args.command == "infer":
         with (
             _input_file_context(args.infile) as infile,
-            _output_file_context(args.outfile) as outfile,
         ):
-            run_inference(config, infile, outfile, args.curriculum_id)
+            run_inference(config, infile, outfile_suffix=args.outfile_suffix, curriculum_id=args.curriculum_id)
     else:
         parser.error(f"Invalid command: {args.command}")
 

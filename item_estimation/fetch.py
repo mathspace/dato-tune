@@ -13,16 +13,14 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-
-def fetch_lantern_responses_from_snowflake(
-    curriculum_id: int, region: Literal["au", "us"], begin_date: date, end_date: date
+def fetch_lantern_repsonses_range(
+    curriculum_id: int,
+    region: Literal["au", "us"],
+    begin_date: date,
+    end_date: date,
 ) -> pd.DataFrame:
-    assert_type(curriculum_id, int)
     assert_type(begin_date, date)
     assert_type(end_date, date)
-
-    account_name = "oua13326" if region == "us" else "pn30490.ap-southeast-2"
-
     query = dedent(f"""
         SELECT
             student_id,
@@ -37,6 +35,94 @@ def fetch_lantern_responses_from_snowflake(
             AND created_at <= '{end_date.isoformat()}'
             AND curriculum_id = '{curriculum_id}'
     """)
+
+    return fetch_lantern_responses_from_snowflake(curriculum_id, region, query)
+
+def fetch_lantern_responses_windowed(
+    curriculum_id: int,
+    region: Literal["au", "us"],
+) -> pd.DataFrame:
+    """
+    Fetch lantern responses with sliding window indices.
+
+    Uses fixed 12-month windows with 6-month stride, going back from today.
+    Each response may appear in multiple windows (up to 2 consecutive windows due to overlap).
+
+    Args:
+        curriculum_id: The curriculum ID to filter by
+        region: Region for Snowflake account ('us' or 'au')
+
+    Returns:
+        DataFrame with responses, where each response may appear in multiple windows.
+        Includes window_index column (0 = most recent 12 months, 1 = next 12 months back, etc.)
+    """
+
+    query = dedent(f"""
+        WITH earliest_date AS (
+            SELECT MIN(created_at) as min_date
+            FROM DATA_SCIENCE.PREPROCESSING.LANTERN_RESPONSES
+            WHERE curriculum_id = '{curriculum_id}'
+        ),
+        date_sequence AS (
+            SELECT
+                ROW_NUMBER() OVER (ORDER BY SEQ4()) - 1 as window_index
+            FROM TABLE(GENERATOR(ROWCOUNT => 500))
+        ),
+        windows AS (
+            SELECT
+                window_index,
+                DATEADD(month, -6 * window_index, CURRENT_DATE()) as window_end,
+                DATEADD(month, -12, DATEADD(month, -6 * window_index, CURRENT_DATE())) as window_start
+            FROM date_sequence, earliest_date
+            WHERE window_start >= min_date
+        ),
+        lantern_responses_latest AS (
+            SELECT
+                lr.student_id,
+                lr.question_public_id,
+                lr.grade_strand_id,
+                lr.grade_substrand_id,
+                lr.skill_id,
+                lr.cold_start_difficulty,
+                lr.result,
+                lr.created_at,
+                lr.curriculum_id,
+            FROM DATA_SCIENCE.PREPROCESSING.LANTERN_RESPONSES lr
+            JOIN DERIVED.PUBLIC.LANTERN_QUESTIONS_PUBLIC lqp
+                ON lr.question_public_id = lqp.id
+            WHERE lr.question_version_id = lqp.latest_question_version_id
+        )
+        SELECT
+            l.student_id,
+            l.question_public_id,
+            l.grade_strand_id,
+            l.grade_substrand_id,
+            l.skill_id,
+            l.cold_start_difficulty,
+            l.result,
+            l.created_at,
+            l.curriculum_id,
+            w.window_index
+        FROM lantern_responses_latest l
+        INNER JOIN windows w
+            ON l.created_at >= w.window_start
+            AND l.created_at < w.window_end
+        WHERE l.curriculum_id = '{curriculum_id}'
+        ORDER BY l.student_id, w.window_index, l.created_at
+    """)
+
+    return fetch_lantern_responses_from_snowflake(curriculum_id, region, query)
+
+def fetch_lantern_responses_from_snowflake(
+    curriculum_id: int,
+    region: Literal["au", "us"],
+    query: str,
+) -> pd.DataFrame:
+    
+    assert_type(curriculum_id, int)
+
+    account_name = "oua13326" if region == "us" else "pn30490.ap-southeast-2"
+
 
     if shutil.which("snowsql") is None:
         raise RuntimeError(
