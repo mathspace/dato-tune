@@ -156,7 +156,7 @@ def get_result(
     granularity,
     original_questions_dificulties: Dict[str, float],
     file_path=None,
-    outfile: TextIO | None = None,
+    outfile_suffix: str | None = None,
     using_window_col=False,
 ):
     # Determine grouping columns for mastery
@@ -201,9 +201,10 @@ def get_result(
         - estimated_difficulty["OriginalDifficulty"]
     ).abs()
 
-    if outfile:
-        estimated_difficulty.to_csv(outfile, index=False)
-        logging.info("estimated difficulty saved to outfile")
+    if outfile_suffix:
+        with open(f"difficulties_{outfile_suffix}.csv", "w") as f:
+            estimated_difficulty.to_csv(f, index=False)
+            logging.info("estimated difficulty saved to outfile")
 
     if file_path:
         mastery_file = os.path.join(file_path, "estimated_mastery.csv")
@@ -311,10 +312,10 @@ def get_questions_difficulties(df) -> Dict[str, float]:
     }
 
 
-def run(config: ConfigParser, df: pd.DataFrame, outfile: TextIO):
+def run(config: ConfigParser, df: pd.DataFrame, outfile_suffix: str):
     inference_config = config["inference"]
 
-    result_folder = Path(inference_config["result_folder"])
+    result_folder = Path(inference_config["result_folder"], outfile_suffix)
     result_folder.mkdir(exist_ok=True, parents=True)
     granularity_col = inference_config["granularity_col"]
     n_iter = inference_config.getint("n_iter", 15)
@@ -375,7 +376,7 @@ def run(config: ConfigParser, df: pd.DataFrame, outfile: TextIO):
         granularity_col,
         original_questions_dificulties=original_difficulties,
         file_path=result_folder,
-        outfile=outfile_suffix,
+        outfile_suffix=outfile_suffix,
         using_window_col=using_window_col,
     )
     auc_train = roc_plot(
