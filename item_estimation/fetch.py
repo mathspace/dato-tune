@@ -25,7 +25,10 @@ def fetch_lantern_repsonses_range(
         SELECT
             student_id,
             question_public_id,
+            question_version_id,
             grade_strand_id,
+            grade_substrand_id,
+            skill_id,
             cold_start_difficulty,
             result,
             created_at,
@@ -75,40 +78,24 @@ def fetch_lantern_responses_windowed(
                 DATEADD(month, -12, DATEADD(month, -6 * window_index, CURRENT_DATE())) as window_start
             FROM date_sequence, earliest_date
             WHERE window_start >= min_date
-        ),
-        lantern_responses_latest AS (
-            SELECT
-                lr.student_id,
-                lr.question_public_id,
-                lr.grade_strand_id,
-                lr.grade_substrand_id,
-                lr.skill_id,
-                lr.cold_start_difficulty,
-                lr.result,
-                lr.created_at,
-                lr.curriculum_id,
-            FROM DATA_SCIENCE.PREPROCESSING.LANTERN_RESPONSES lr
-            JOIN DERIVED.PUBLIC.LANTERN_QUESTIONS_PUBLIC lqp
-                ON lr.question_public_id = lqp.id
-            WHERE lr.question_version_id = lqp.latest_question_version_id
         )
         SELECT
-            l.student_id,
-            l.question_public_id,
-            l.grade_strand_id,
-            l.grade_substrand_id,
-            l.skill_id,
-            l.cold_start_difficulty,
-            l.result,
-            l.created_at,
-            l.curriculum_id,
+            lr.student_id,
+            lr.question_public_id,
+            lr.question_version_id,
+            lr.grade_strand_id,
+            lr.grade_substrand_id,
+            lr.skill_id,
+            lr.cold_start_difficulty,
+            lr.result,
+            lr.created_at,
+            lr.curriculum_id,
             w.window_index
-        FROM lantern_responses_latest l
+        FROM DATA_SCIENCE.PREPROCESSING.LANTERN_RESPONSES lr
         INNER JOIN windows w
-            ON l.created_at >= w.window_start
-            AND l.created_at < w.window_end
-        WHERE l.curriculum_id = '{curriculum_id}'
-        ORDER BY l.student_id, w.window_index, l.created_at
+            ON lr.created_at >= w.window_start
+            AND lr.created_at < w.window_end
+        WHERE lr.curriculum_id = '{curriculum_id}'
     """)
 
     return fetch_lantern_responses_from_snowflake(curriculum_id, region, query)

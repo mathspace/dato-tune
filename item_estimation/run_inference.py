@@ -12,6 +12,7 @@ from sklearn.metrics import auc, roc_curve
 
 import model_inference as mi
 from load_data import DataLoader
+from model_inference import logistic_cdf
 from utils import ColumnMapping
 
 
@@ -207,12 +208,8 @@ def get_result(
     estimated_difficulty["OriginalDifficulty"] = estimated_difficulty[
         ColumnMapping.question_id
     ].apply(lambda q_id: original_questions_dificulties.get(q_id))
-    estimated_difficulty["CalibratedDifficulty"] = (
+    estimated_difficulty["CalibratedDifficulty"] = logistic_cdf(
         estimated_difficulty[ColumnMapping.difficulty]
-        - estimated_difficulty[ColumnMapping.difficulty].min()
-    ) / (
-        estimated_difficulty[ColumnMapping.difficulty].max()
-        - estimated_difficulty[ColumnMapping.difficulty].min()
     )
     estimated_difficulty["DifficultiesDifference abs(Original-Calibrated)"] = (
         estimated_difficulty["CalibratedDifficulty"]

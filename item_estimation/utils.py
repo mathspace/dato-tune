@@ -29,7 +29,7 @@ class ColumnMapping:
     CREATED_AT
     WINDOW_INDEX"""
 
-    question_id = "QUESTION_PUBLIC_ID"
+    question_id = "QUESTION_VERSION_ID"
     student_id = "STUDENT_ID"
     grade_strand_id = "GRADE_STRAND_ID"
     grade_substrand_id = "GRADE_SUBSTRAND_ID"

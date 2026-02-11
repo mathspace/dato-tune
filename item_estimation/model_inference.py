@@ -238,7 +238,7 @@ def batch_mastery_estimation(
 
     # Determine grouping columns
     group_cols = [ColumnMapping.student_id, granularity_col]
-    if using_window_col is not None:
+    if using_window_col:
         group_cols.append(ColumnMapping.window_index)
 
     def set_bounds(m0):
@@ -272,7 +272,7 @@ def batch_mastery_estimation(
     mask_extreme = df_res[ColumnMapping.mastery].abs() >= 4.99
     n_dropped = mask_extreme.sum()
     if n_dropped > 0:
-        logging.info(f"Dropping {n_dropped} student-mastery pairs that hit bounds (|mastery| >= 5.0)")
+        logging.info(f"Dropping {n_dropped} student-mastery pairs that hit bounds (|mastery| >= 4.99)")
     df_res = df_res[~mask_extreme]
 
     cols = [
