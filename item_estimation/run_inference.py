@@ -26,7 +26,7 @@ def load_inference_data(data_loader: DataLoader):
 
 
 def run_mle(
-    train_data, granularity, infer_mastery=True, infer_item=True, n_iter=30, tol=0.1
+    train_data, granularity, infer_mastery=True, infer_item=True, tune_discrimination=False, n_iter=30, tol=0.01
 ):
     df = train_data.copy()
     # add default value as initial value of optimisation
@@ -58,6 +58,7 @@ def run_mle(
     estimation_tracking = [(0, "item", likelihood), (0, "mastery", likelihood)]
     for it in range(n_iter):
         if infer_item:
+            df = mi.batch_item_estimation(df, tune_discrimination=tune_discrimination)
             df = mi.batch_item_estimation(df)
             likelihood = mi.total_likelihood(df)
             estimation_tracking.append((it + 1, "item", likelihood))
@@ -320,6 +321,7 @@ def run(config: ConfigParser, df: pd.DataFrame, outfile: TextIO):
     tol = inference_config.getfloat("tol", 0.1)
     infer_mastery = inference_config.getboolean("infer_mastery", True)
     infer_item = inference_config.getboolean("infer_item", True)
+    tune_discrimination = inference_config.getboolean("tune_discrimination", False)
     is_benchmark = inference_config.getboolean("is_benchmark", False)
     show_graph = inference_config.getboolean("show_graph", False)
     random_seed = inference_config.getint("random_seed", 123)
@@ -353,6 +355,7 @@ def run(config: ConfigParser, df: pd.DataFrame, outfile: TextIO):
         granularity_col,
         infer_mastery=infer_mastery,
         infer_item=infer_item,
+        tune_discrimination=tune_discrimination,
         n_iter=n_iter,
         tol=tol,
     )

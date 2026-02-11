@@ -161,16 +161,19 @@ def remove_groups_with_insufficient_data(df, group_cols, min_obs):
     )
 
 
-def batch_item_estimation(data, default_values=None, **kwargs):
+def batch_item_estimation(data, default_values=None, tune_discrimination=False, **kwargs):
     if default_values is None:
         default_values = [0.0, 1.0]
 
     # set bounds
     difficulty_step_size = kwargs.get("difficulty_step_size", 1.0)
     difficulty_limit = kwargs.get("difficulty_limit", (-5.0, 5.0))
-    discrimination_step_size = kwargs.get("discrimination_step_size", 0.5)
-    discrimination_limit = kwargs.get("discrimination_limit", (0.8, 1.2))
-
+    if tune_discrimination:
+        discrimination_step_size = kwargs.get("discrimination_step_size", 0.1)
+        discrimination_limit = kwargs.get("discrimination_limit", (0.0, 2.0))
+    else:
+        discrimination_step_size = kwargs.get("discrimination_step_size", 0.01)
+        discrimination_limit = kwargs.get("discrimination_limit", (0.95, 1.05))
     def get_difficulty_bounds(d0):
         return (
             max(d0 - difficulty_step_size, difficulty_limit[0]),
@@ -206,6 +209,13 @@ def batch_item_estimation(data, default_values=None, **kwargs):
     mask_failed = df_res.success < 0.5
     df_res.loc[mask_failed, ColumnMapping.difficulty] = default_values[0]
     df_res.loc[mask_failed, ColumnMapping.discrimination] = default_values[1]
+
+    # Reset extreme discrimination values to prevent feedback loop
+    mask_extreme = df_res[ColumnMapping.discrimination] >= 1.95
+    n_reset = mask_extreme.sum()
+    if n_reset > 0:
+        logging.info(f"Resetting {n_reset} items with extreme discrimination values (>= 1.95) to 1.0")
+    df_res.loc[mask_extreme, ColumnMapping.discrimination] = 1.0
 
     cols = [
         col
