@@ -32,6 +32,8 @@ class ColumnMapping:
     question_id = "QUESTION_PUBLIC_ID"
     student_id = "STUDENT_ID"
     grade_strand_id = "GRADE_STRAND_ID"
+    grade_substrand_id = "GRADE_SUBSTRAND_ID"
+    skill_id = "SKILL_ID"
     difficulty = "COLD_START_DIFFICULTY"
     result = "RESULT"
     score = "SCORE"

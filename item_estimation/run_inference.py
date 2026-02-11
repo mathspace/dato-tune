@@ -317,7 +317,7 @@ def run(config: ConfigParser, df: pd.DataFrame, outfile_suffix: str):
 
     result_folder = Path(inference_config["result_folder"], outfile_suffix)
     result_folder.mkdir(exist_ok=True, parents=True)
-    granularity_col = inference_config["granularity_col"]
+    granularity = inference_config["granularity_col"]
     n_iter = inference_config.getint("n_iter", 15)
     tol = inference_config.getfloat("tol", 0.1)
     infer_mastery = inference_config.getboolean("infer_mastery", True)
@@ -330,6 +330,10 @@ def run(config: ConfigParser, df: pd.DataFrame, outfile_suffix: str):
     split_ratio = inference_config.getfloat("split_ratio", 0.2)
 
     np.random.seed(random_seed)
+
+    granularity_col = getattr(ColumnMapping, granularity)
+    if granularity_col is None:
+        raise ValueError(f"granularity_col {granularity} is not a valid ColumnMapping attribute")
 
     qa_history = df
     
