@@ -1,3 +1,4 @@
+import logging
 import math
 
 import numpy as np
@@ -266,6 +267,13 @@ def batch_mastery_estimation(
     )
     mask_failed = df_res.success < 0.5
     df_res.loc[mask_failed, ColumnMapping.mastery] = default_value
+
+    # Drop only mastery values that hit the exact bounds (optimizer constraint failure)
+    mask_extreme = df_res[ColumnMapping.mastery].abs() >= 4.99
+    n_dropped = mask_extreme.sum()
+    if n_dropped > 0:
+        logging.info(f"Dropping {n_dropped} student-mastery pairs that hit bounds (|mastery| >= 5.0)")
+    df_res = df_res[~mask_extreme]
 
     cols = [
         col for col in data.columns if col not in ["success", ColumnMapping.mastery]
