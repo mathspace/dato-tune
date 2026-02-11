@@ -53,34 +53,52 @@ def run_mle(
 
     df = df[cols_to_keep]
 
+    # Track initial item count for reporting
+    total_items = df[ColumnMapping.question_id].nunique()
+    logging.info(f"Starting optimization with {total_items} unique items")
 
+    n_obs = len(df)
     likelihood = mi.total_likelihood(df)
-    estimation_tracking = [(0, "item", likelihood), (0, "mastery", likelihood)]
+    avg_likelihood = likelihood / n_obs
+    estimation_tracking = [(0, "item", likelihood, n_obs, avg_likelihood), (0, "mastery", likelihood, n_obs, avg_likelihood)]
     for it in range(n_iter):
         if infer_item:
             df = mi.batch_item_estimation(df, tune_discrimination=tune_discrimination)
-            df = mi.batch_item_estimation(df)
+            n_obs = len(df)
+            n_items = df[ColumnMapping.question_id].nunique()
+            item_pct = 100 * n_items / total_items
             likelihood = mi.total_likelihood(df)
-            estimation_tracking.append((it + 1, "item", likelihood))
+            avg_likelihood = likelihood / n_obs
+            estimation_tracking.append((it + 1, "item", likelihood, n_obs, avg_likelihood))
             logging.info(
-                f"iteration: {it}, step: item estimation, total likelihood{likelihood}"
+                f"iteration: {it}, step: item estimation, items: {n_items}/{total_items} ({item_pct:.1f}%), "
+                f"n_obs: {n_obs}, avg likelihood: {avg_likelihood:.6f}"
             )
 
         if infer_mastery:
             df = mi.batch_mastery_estimation(df, granularity_col=granularity, using_window_col=using_window_col)
-            df = mi.batch_mastery_estimation(df, granularity_col=granularity)
+            n_obs = len(df)
             likelihood = mi.total_likelihood(df)
-            estimation_tracking.append((it + 1, "mastery", likelihood))
+            avg_likelihood = likelihood / n_obs
+            estimation_tracking.append((it + 1, "mastery", likelihood, n_obs, avg_likelihood))
             logging.info(
-                f"iteration: {it}, step: mastery estimation, total likelihood{likelihood}"
+                f"iteration: {it}, step: mastery estimation, total likelihood: {likelihood}, n_obs: {n_obs}, avg: {avg_likelihood:.6f}"
             )
 
         if len(estimation_tracking) >= 4:
-            benefit_mastery = estimation_tracking[-1][2] - estimation_tracking[-3][2]
-            benefit_item = estimation_tracking[-2][2] - estimation_tracking[-4][2]
-            if (benefit_mastery < tol) and (benefit_item < tol):
+            # Use percentage improvement in average likelihood for convergence
+            prev_avg_mastery = estimation_tracking[-3][4]
+            curr_avg_mastery = estimation_tracking[-1][4]
+            prev_avg_item = estimation_tracking[-4][4]
+            curr_avg_item = estimation_tracking[-2][4]
+
+            relative_benefit_mastery = (curr_avg_mastery - prev_avg_mastery) / abs(prev_avg_mastery)
+            relative_benefit_item = (curr_avg_item - prev_avg_item) / abs(prev_avg_item)
+
+            if (0 < relative_benefit_mastery < tol) and (0 < relative_benefit_item < tol):
                 logging.info(
-                    f"optimisation stopped at iteration {it}, as likelihood improvement is less than the tolerance level {tol}"
+                    f"optimisation stopped at iteration {it}, mastery improvement: {relative_benefit_mastery:.4%}, "
+                    f"item improvement: {relative_benefit_item:.4%}, tolerance: {tol:.4%}"
                 )
                 break
 
@@ -90,7 +108,7 @@ def run_mle(
         df[ColumnMapping.discrimination].values,
     )
     estimation_tracking = pd.DataFrame.from_records(
-        estimation_tracking, columns=["iter", "step", "likelihood"]
+        estimation_tracking, columns=["iter", "step", "likelihood", "n_obs", "avg_likelihood"]
     )
     return estimation_tracking, df
 
@@ -319,7 +337,7 @@ def run(config: ConfigParser, df: pd.DataFrame, outfile_suffix: str):
     result_folder.mkdir(exist_ok=True, parents=True)
     granularity = inference_config["granularity_col"]
     n_iter = inference_config.getint("n_iter", 15)
-    tol = inference_config.getfloat("tol", 0.1)
+    tol = inference_config.getfloat("tol", 0.01)  # Default 1% relative improvement
     infer_mastery = inference_config.getboolean("infer_mastery", True)
     infer_item = inference_config.getboolean("infer_item", True)
     tune_discrimination = inference_config.getboolean("tune_discrimination", False)
