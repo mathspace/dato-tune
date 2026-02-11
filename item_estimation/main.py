@@ -124,6 +124,7 @@ def main():
     inference_parser = subparsers.add_parser("infer")
     _ = inference_parser.add_argument("--infile", type=str, default="-")
     _ = inference_parser.add_argument("--outfile", type=str, default="-")
+    _ = inference_parser.add_argument("--outfile-suffix", type=str, default="-")
     _ = inference_parser.add_argument("--curriculum-id", type=int, required=True)
 
     args = parser.parse_args()
