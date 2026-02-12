@@ -25,6 +25,7 @@ def fetch_lantern_repsonses_range(
         SELECT
             student_id,
             question_public_id,
+            latest_question_version_id,
             question_version_id,
             grade_strand_id,
             grade_substrand_id,
@@ -81,6 +82,7 @@ def fetch_lantern_responses_windowed(
         SELECT
             lr.student_id,
             lr.question_public_id,
+            lr.latest_question_version_id,
             lr.question_version_id,
             lr.grade_strand_id,
             lr.grade_substrand_id,

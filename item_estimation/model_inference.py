@@ -201,7 +201,7 @@ def batch_item_estimation(data, default_values=None, tune_discrimination=False, 
         out[1:] = opt_results.x
         return out
 
-    res = data.groupby([ColumnMapping.question_id]).apply(func)
+    res = data.groupby([ColumnMapping.estimate_question_id]).apply(func)
     df_res = pd.DataFrame(
         res.values.tolist(),
         columns=["success", ColumnMapping.difficulty, ColumnMapping.discrimination],
@@ -226,7 +226,7 @@ def batch_item_estimation(data, default_values=None, tune_discrimination=False, 
     ]
 
     return pd.merge(
-        data[cols], df_res.reset_index(), on=ColumnMapping.question_id, validate="m:1"
+        data[cols], df_res.reset_index(), on=ColumnMapping.estimate_question_id, validate="m:1"
     )
 
 

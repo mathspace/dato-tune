@@ -42,7 +42,7 @@ def run_mle(
     cols_to_keep = [
         ColumnMapping.student_id,
         granularity,
-        ColumnMapping.question_id,
+        ColumnMapping.estimate_question_id,
         ColumnMapping.score,
         ColumnMapping.difficulty,
         ColumnMapping.discrimination,
@@ -55,7 +55,7 @@ def run_mle(
     df = df[cols_to_keep]
 
     # Track initial item count for reporting
-    total_items = df[ColumnMapping.question_id].nunique()
+    total_items = df[ColumnMapping.estimate_question_id].nunique()
     logging.info(f"Starting optimization with {total_items} unique items")
 
     n_obs = len(df)
@@ -66,7 +66,7 @@ def run_mle(
         if infer_item:
             df = mi.batch_item_estimation(df, tune_discrimination=tune_discrimination)
             n_obs = len(df)
-            n_items = df[ColumnMapping.question_id].nunique()
+            n_items = df[ColumnMapping.estimate_question_id].nunique()
             item_pct = 100 * n_items / total_items
             likelihood = mi.total_likelihood(df)
             avg_likelihood = likelihood / n_obs
@@ -173,7 +173,7 @@ def estimation_histogram(df, title="Histogram", file_name=None, display=True):
 def get_result(
     train_result,
     granularity,
-    original_questions_dificulties: Dict[str, float],
+    original_questions_dificulties: Dict[str, dict],
     file_path=None,
     outfile_suffix: str | None = None,
     using_window_col=False,
@@ -188,13 +188,13 @@ def get_result(
         .agg(
             {
                 ColumnMapping.mastery: "mean",
-                ColumnMapping.question_id: pd.Series.nunique,
+                ColumnMapping.estimate_question_id: pd.Series.nunique,
             }
         )
-        .rename(columns={ColumnMapping.question_id: "n_question"})
+        .rename(columns={ColumnMapping.estimate_question_id: "n_question"})
     )
     estimated_difficulty = (
-        train_result.groupby([ColumnMapping.question_id], as_index=False)
+        train_result.groupby([ColumnMapping.estimate_question_id], as_index=False)
         .agg(
             {
                 ColumnMapping.difficulty: "mean",
@@ -205,27 +205,33 @@ def get_result(
         .rename(columns={ColumnMapping.student_id: "n_student"})
     )
 
+    # Look up original difficulty by version_id (only exists for latest versions)
     estimated_difficulty["OriginalDifficulty"] = estimated_difficulty[
-        ColumnMapping.question_id
-    ].apply(lambda q_id: original_questions_dificulties.get(q_id))
-    estimated_difficulty["CalibratedDifficulty"] = logistic_cdf(
-        estimated_difficulty[ColumnMapping.difficulty]
+        ColumnMapping.estimate_question_id
+    ].apply(lambda v_id: original_questions_dificulties.get(v_id, {}).get('difficulty'))
+
+    # Filter to only items with original difficulty (i.e., latest versions)
+    estimated_difficulty_latest = estimated_difficulty[
+        estimated_difficulty["OriginalDifficulty"].notna()
+    ].copy()
+    estimated_difficulty_latest["CalibratedDifficulty"] = logistic_cdf(
+        estimated_difficulty_latest[ColumnMapping.difficulty]
     )
-    estimated_difficulty["DifficultiesDifference abs(Original-Calibrated)"] = (
-        estimated_difficulty["CalibratedDifficulty"]
-        - estimated_difficulty["OriginalDifficulty"]
+    estimated_difficulty_latest["DifficultiesDifference abs(Original-Calibrated)"] = (
+        estimated_difficulty_latest["CalibratedDifficulty"]
+        - estimated_difficulty_latest["OriginalDifficulty"]
     ).abs()
 
     if outfile_suffix:
         with open(f"difficulties_{outfile_suffix}.csv", "w") as f:
-            estimated_difficulty.to_csv(f, index=False)
+            estimated_difficulty_latest.to_csv(f, index=False)
             logging.info("estimated difficulty saved to outfile")
 
     if file_path:
         mastery_file = os.path.join(file_path, "estimated_mastery.csv")
         difficulty_file = os.path.join(file_path, "estimated_item.csv")
         estimated_mastery.to_csv(mastery_file)
-        estimated_difficulty.to_csv(difficulty_file, index=False)
+        estimated_difficulty_latest.to_csv(difficulty_file, index=False)
         logging.info(
             f"estimated mastery and difficulty are saved as files {mastery_file} and {difficulty_file}"
         )
@@ -249,7 +255,7 @@ def calc_test_result(estimated_mastery, estimated_difficulty, test_data, granula
         .merge(
             estimated_mastery, on=merge_cols, how="inner"
         )
-        .merge(estimated_difficulty, on=[ColumnMapping.question_id], how="inner")
+        .merge(estimated_difficulty, on=[ColumnMapping.estimate_question_id], how="inner")
     )
     df[ColumnMapping.p_correct] = mi.p_correct(
         df[ColumnMapping.mastery].values,
@@ -268,14 +274,14 @@ def benchmark_gbm(train_data, test_data, **kwargs):
 
     show_graph = kwargs.get("display", kwargs.get("show_graph", False))
     train_data["question_num_id"] = (
-        train_data[ColumnMapping.question_id].astype("category").cat.codes
+        train_data[ColumnMapping.estimate_question_id].astype("category").cat.codes
     )
     test_df_sub = test_data.merge(
         train_data[[ColumnMapping.student_id]].drop_duplicates(),
         on=[ColumnMapping.student_id],
     ).merge(
-        train_data[[ColumnMapping.question_id, "question_num_id"]].drop_duplicates(),
-        on=[ColumnMapping.question_id],
+        train_data[[ColumnMapping.estimate_question_id, "question_num_id"]].drop_duplicates(),
+        on=[ColumnMapping.estimate_question_id],
     )
     X_train = train_data[[ColumnMapping.student_id, "question_num_id"]].values
     y_train = train_data[ColumnMapping.score].values
@@ -316,11 +322,20 @@ def benchmark_gbm(train_data, test_data, **kwargs):
     return model
 
 
-def get_questions_difficulties(df) -> Dict[str, float]:
+def get_questions_difficulties(df) -> Dict[str, dict]:
+    # Filter to only latest versions
+    latest_versions = df[
+        df[ColumnMapping.estimate_question_id] == df[ColumnMapping.latest_question_version_id]
+    ]
+
+    # Return dict keyed by version_id with public_id and difficulty
     return {
-        question_id: difficulty
-        for question_id, difficulty in df[
-            [ColumnMapping.question_id, ColumnMapping.difficulty]
+        version_id: {
+            'public_id': public_id,
+            'difficulty': difficulty
+        }
+        for version_id, public_id, difficulty in latest_versions[
+            [ColumnMapping.estimate_question_id, ColumnMapping.question_public_id, ColumnMapping.difficulty]
         ]
         .drop_duplicates()
         .values
@@ -363,7 +378,7 @@ def run(config: ConfigParser, df: pd.DataFrame, outfile_suffix: str):
     original_difficulties = get_questions_difficulties(qa_history)
     train_df, test_df = mi.split_train_test_data_on_group(
         qa_history,
-        [ColumnMapping.student_id, ColumnMapping.question_id],
+        [ColumnMapping.student_id, ColumnMapping.estimate_question_id],
         ratio=split_ratio,
     )
     logging.info(
