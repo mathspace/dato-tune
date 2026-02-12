@@ -48,8 +48,7 @@ def fetch_lantern_responses_windowed(
     """
     Fetch lantern responses with sliding window indices.
 
-    Uses fixed 12-month windows with 6-month stride, going back from today.
-    Each response may appear in multiple windows (up to 2 consecutive windows due to overlap).
+    Uses fixed 12-month windows with 12-month stride, going back from today.
 
     Args:
         curriculum_id: The curriculum ID to filter by
@@ -74,8 +73,8 @@ def fetch_lantern_responses_windowed(
         windows AS (
             SELECT
                 window_index,
-                DATEADD(month, -6 * window_index, CURRENT_DATE()) as window_end,
-                DATEADD(month, -12, DATEADD(month, -6 * window_index, CURRENT_DATE())) as window_start
+                DATEADD(month, -12 * window_index, CURRENT_DATE()) as window_end,
+                DATEADD(month, -12, DATEADD(month, -12 * window_index, CURRENT_DATE())) as window_start
             FROM date_sequence, earliest_date
             WHERE window_start >= min_date
         )

@@ -69,46 +69,6 @@ def preprocess_qa_df(
     # use only the data from the first catalog
     df = df.loc[df[ColumnMapping.curriculum_id] == curriculum_id].copy()
 
-    # Deduplicate groups that have identical observation sets across windows
-    # If student-granularity-window groups have the exact same observations, keep only one
-    if ColumnMapping.window_index in df.columns:
-        initial_rows = len(df)
-        granularity_col = kwargs.get("granularity_col", ColumnMapping.grade_strand_id)
-
-        # Create a signature for each group's observation set
-        df['_obs_signature'] = df.apply(
-            lambda row: (row[ColumnMapping.question_id], row[ColumnMapping.completed_at]), axis=1
-        )
-
-        # For each student-granularity-window, create a signature of all observations
-        group_cols = [ColumnMapping.student_id, granularity_col, ColumnMapping.window_index]
-        group_signatures = df.groupby(group_cols)['_obs_signature'].apply(
-            lambda x: frozenset(x)
-        ).reset_index(name='_group_signature')
-
-        # Merge back to get group signature for each row
-        df = df.merge(group_signatures, on=group_cols, how='left')
-
-        # For each student-granularity pair, find groups with duplicate signatures
-        # Keep only the first window_index for each unique signature
-        dedup_cols = [ColumnMapping.student_id, granularity_col, '_group_signature']
-        groups_to_keep = df[group_cols + ['_group_signature']].drop_duplicates(subset=dedup_cols, keep='first')
-
-        # Keep only rows that belong to the kept groups
-        df = df.merge(
-            groups_to_keep[group_cols],
-            on=group_cols,
-            how='inner',
-            validate='m:1'
-        )
-
-        # Clean up temporary columns
-        df = df.drop(columns=['_obs_signature', '_group_signature'])
-
-        removed_rows = initial_rows - len(df)
-        if removed_rows > 0:
-            logging.info(f"Removed {removed_rows:,} observations from duplicate groups ({removed_rows/initial_rows*100:.1f}%)")
-            logging.info(f"Remaining observations: {len(df):,}")
 
     if add_default_values:
         df[ColumnMapping.difficulty] = kwargs.get("default_difficulty", 0.0)
