@@ -167,8 +167,8 @@ def batch_item_estimation(data, default_values=None, tune_discrimination=False, 
         default_values = [0.0, 1.0]
 
     # set bounds
-    difficulty_step_size = kwargs.get("difficulty_step_size", 1.0)
-    difficulty_limit = kwargs.get("difficulty_limit", (-5.0, 5.0))
+    difficulty_step_size = kwargs.get("difficulty_step_size", 0.5)
+    difficulty_limit = kwargs.get("difficulty_limit", (-3.0, 3.0))
     if tune_discrimination:
         discrimination_step_size = kwargs.get("discrimination_step_size", 0.1)
         discrimination_limit = kwargs.get("discrimination_limit", (0.0, 2.0))
