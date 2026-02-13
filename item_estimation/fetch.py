@@ -45,19 +45,21 @@ def fetch_lantern_repsonses_range(
 def fetch_lantern_responses_windowed(
     curriculum_id: int,
     region: Literal["au", "us"],
+    window_size_months: int,
 ) -> pd.DataFrame:
     """
     Fetch lantern responses with sliding window indices.
 
-    Uses fixed 12-month windows with 12-month stride, going back from today.
+    Uses configurable window size with same stride, going back from today.
 
     Args:
         curriculum_id: The curriculum ID to filter by
         region: Region for Snowflake account ('us' or 'au')
+        window_size_months: Size of each window in months
 
     Returns:
         DataFrame with responses, where each response may appear in multiple windows.
-        Includes window_index column (0 = most recent 12 months, 1 = next 12 months back, etc.)
+        Includes window_index column (0 = most recent window, 1 = next window back, etc.)
     """
 
     query = dedent(f"""
@@ -74,8 +76,8 @@ def fetch_lantern_responses_windowed(
         windows AS (
             SELECT
                 window_index,
-                DATEADD(month, -12 * window_index, CURRENT_DATE()) as window_end,
-                DATEADD(month, -12, DATEADD(month, -12 * window_index, CURRENT_DATE())) as window_start
+                DATEADD(month, -{window_size_months} * window_index, CURRENT_DATE()) as window_end,
+                DATEADD(month, -{window_size_months}, DATEADD(month, -{window_size_months} * window_index, CURRENT_DATE())) as window_start
             FROM date_sequence, earliest_date
             WHERE window_start >= min_date
         )

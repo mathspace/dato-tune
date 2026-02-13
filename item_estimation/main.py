@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 
 from rich.logging import RichHandler
 from configparser import ConfigParser, ExtendedInterpolation
 from contextlib import nullcontext
 from datetime import date, datetime
-from typing import TextIO
+from typing import Literal, TextIO
 
 import pandas as pd
 
@@ -46,13 +47,13 @@ def setup_logging(logfile: str | None = None):
 def run_fetch_data(
     outfile: TextIO,
     curriculum_id: int,
-    region: str,
-    windowed: bool,
+    region: Literal["au", "us"],
+    window_size_months: int | None = None,
     begin_date: date | None = None,
     end_date: date | None = None,
 ):
-    if windowed:
-        df = fetch_lantern_responses_windowed(curriculum_id, region)
+    if window_size_months is not None:
+        df = fetch_lantern_responses_windowed(curriculum_id, region, window_size_months)
     else:
         if begin_date is None or end_date is None:
             raise ValueError("begin_date and end_date are required when not using windowed mode")
@@ -76,6 +77,23 @@ def _output_file_context(filename: str):
 
 def _yyyy_mm_dd_date(x: str):
     return datetime.strptime(x, "%Y-%m-%d").date()
+
+
+def _parse_window_size(window_size: str) -> int:
+    """Parse window size string (e.g., '12m', '1y') and return months as integer."""
+    match = re.match(r'^(\d+)([my])$', window_size.lower())
+    if not match:
+        raise argparse.ArgumentTypeError(
+            f"Invalid window size format: '{window_size}'. Expected format: <number>m (months) or <number>y (years), e.g., '12m' or '1y'"
+        )
+
+    value, unit = match.groups()
+    months = int(value) * 12 if unit == 'y' else int(value)
+
+    if months <= 0:
+        raise argparse.ArgumentTypeError(f"Window size must be positive, got: {window_size}")
+
+    return months
 
 
 def main():
@@ -103,22 +121,23 @@ def main():
         help="Region for Snowflake account: 'us' or 'au'",
     )
     _ = fetch_parser.add_argument(
-        "--windowed",
+        "--window-size",
         "-w",
-        action="store_true",
-        help="Use windowed mode (sliding 12-month windows with 6-month stride)",
+        type=_parse_window_size,
+        required=False,
+        help="Window size for sliding windows (e.g., '12m' for 12 months, '1y' for 1 year). Uses same stride as window size.",
     )
     _ = fetch_parser.add_argument(
         "--begin-date",
         type=_yyyy_mm_dd_date,
         required=False,
-        help="Start date (YYYY-MM-DD), required if not using --windowed",
+        help="Start date (YYYY-MM-DD), required if not using --window-size",
     )
     _ = fetch_parser.add_argument(
         "--end-date",
         type=_yyyy_mm_dd_date,
         required=False,
-        help="End date (YYYY-MM-DD), required if not using --windowed",
+        help="End date (YYYY-MM-DD), required if not using --window-size",
     )
 
     inference_parser = subparsers.add_parser("infer")
@@ -130,17 +149,17 @@ def main():
     args = parser.parse_args()
 
     if args.command == "fetch":
-        if not args.windowed and (args.begin_date is None or args.end_date is None):
-            parser.error("--begin-date and --end-date are required when not using --windowed")
-        if args.windowed and (args.begin_date is not None or args.end_date is not None):
-            parser.error("--begin-date and --end-date cannot be used with --windowed")
+        if args.window_size is None and (args.begin_date is None or args.end_date is None):
+            parser.error("--begin-date and --end-date are required when not using --window-size")
+        if args.window_size is not None and (args.begin_date is not None or args.end_date is not None):
+            parser.error("--begin-date and --end-date cannot be used with --window-size")
 
         with _output_file_context(args.outfile) as outfile:
             run_fetch_data(
                 outfile,
                 args.curriculum_id,
                 args.region,
-                args.windowed,
+                args.window_size,
                 args.begin_date,
                 args.end_date,
             )
