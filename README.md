@@ -46,14 +46,14 @@ uv run item_estimation/main.py fetch \
 
 #### Windowed Mode
 
-Fetch data using sliding 12-month windows with 6-month stride (each response may appear in multiple windows):
+Fetch data using sliding x-month windows with x-month stride (accepts /\dm/ or /\dy/ as window-size arg):
 
 ```bash
 uv run item_estimation/main.py fetch \
   --region us \
   --curriculum-id 15 \
   --outfile lantern_responses.csv \
-  --windowed
+  --window-size 12m
 ```
 
 Or use the short flag:
