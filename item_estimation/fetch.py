@@ -42,6 +42,14 @@ def fetch_lantern_repsonses_range(
 
     return fetch_lantern_responses_from_snowflake(curriculum_id, region, query)
 
+# We want to maintain data localised in time. Student ability is expected to change over
+# time, so we can't expect a single student's data ranging over long period of time
+# to reliably estimate their abilty. However, we don't want to ignore a
+# significant amount of usable data by only considering a small period per student.
+
+# We use a 'windowed' approach where each students activity is chunked into periods,
+# and for the purposes of estimation each student-window is a unique agent
+# with distinct topic-abilities.
 def fetch_lantern_responses_windowed(
     curriculum_id: int,
     region: Literal["au", "us"],

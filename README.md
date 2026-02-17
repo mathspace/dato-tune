@@ -46,6 +46,10 @@ uv run item_estimation/main.py fetch \
 
 #### Windowed Mode
 
+We want to maintain data localised in time. Student ability is expected to change over time, so we can't expect a single student's data ranging over long period of time to reliably estimate their abilty. However, we don't want to ignore a significant amount of usable data by only considering a small period per student.
+
+We use a 'windowed' approach where each students activity is chunked into periods, and for the purposes of estimation each student-window is a unique agent with distinct topic-abilities.
+
 Fetch data using sliding x-month windows with x-month stride (accepts /\dm/ or /\dy/ as window-size arg):
 
 ```bash
@@ -54,16 +58,6 @@ uv run item_estimation/main.py fetch \
   --curriculum-id 15 \
   --outfile lantern_responses.csv \
   --window-size 12m
-```
-
-Or use the short flag:
-
-```bash
-uv run item_estimation/main.py fetch \
-  --region us \
-  --curriculum-id 15 \
-  --outfile lantern_responses.csv \
-  -w
 ```
 
 **Note:** A web browser will open automatically for Snowflake authentication. You'll need appropriate Snowflake access permissions.
