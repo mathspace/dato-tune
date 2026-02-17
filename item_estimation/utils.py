@@ -26,11 +26,16 @@ class ColumnMapping:
     STRAND_ID
     DURATION
     RECOMMENDATION_REASON_KEYWORD
-    CREATED_AT"""
+    CREATED_AT
+    WINDOW_INDEX"""
 
-    question_id = "QUESTION_PUBLIC_ID"
+    question_public_id = "QUESTION_PUBLIC_ID"
+    latest_question_version_id = "LATEST_QUESTION_VERSION_ID"
+    estimate_question_id = "QUESTION_VERSION_ID"
     student_id = "STUDENT_ID"
     grade_strand_id = "GRADE_STRAND_ID"
+    grade_substrand_id = "GRADE_SUBSTRAND_ID"
+    skill_id = "SKILL_ID"
     difficulty = "COLD_START_DIFFICULTY"
     result = "RESULT"
     score = "SCORE"
@@ -40,6 +45,7 @@ class ColumnMapping:
     discrimination = "discrimination"
     mastery = "mastery"
     p_correct = "p_correct"
+    window_index = "WINDOW_INDEX"
 
 
 def get_git_info():

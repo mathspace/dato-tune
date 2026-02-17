@@ -12,6 +12,7 @@ from sklearn.metrics import auc, roc_curve
 
 import model_inference as mi
 from load_data import DataLoader
+from model_inference import logistic_cdf
 from utils import ColumnMapping
 
 
@@ -26,7 +27,7 @@ def load_inference_data(data_loader: DataLoader):
 
 
 def run_mle(
-    train_data, granularity, infer_mastery=True, infer_item=True, n_iter=30, tol=0.1
+    train_data, granularity, infer_mastery=True, infer_item=True, tune_discrimination=False, n_iter=30, tol=0.01
 ):
     df = train_data.copy()
     # add default value as initial value of optimisation
@@ -36,43 +37,69 @@ def run_mle(
     ):
         if col not in df.columns:
             df[col] = default_value
-    df = df[
-        [
-            ColumnMapping.student_id,
-            granularity,
-            ColumnMapping.question_id,
-            ColumnMapping.score,
-            ColumnMapping.difficulty,
-            ColumnMapping.discrimination,
-            ColumnMapping.mastery,
-        ]
-    ]
 
+    # Select columns including window_col if provided
+    cols_to_keep = [
+        ColumnMapping.student_id,
+        granularity,
+        ColumnMapping.estimate_question_id,
+        ColumnMapping.score,
+        ColumnMapping.difficulty,
+        ColumnMapping.discrimination,
+        ColumnMapping.mastery,
+    ]
+    using_window_col = ColumnMapping.window_index in df.columns
+    if using_window_col:
+        cols_to_keep.append(ColumnMapping.window_index)
+
+    df = df[cols_to_keep]
+
+    # Track initial item count for reporting
+    total_items = df[ColumnMapping.estimate_question_id].nunique()
+    logging.info(f"Starting optimization with {total_items} unique items")
+
+    n_obs = len(df)
     likelihood = mi.total_likelihood(df)
-    estimation_tracking = [(0, "item", likelihood), (0, "mastery", likelihood)]
+    avg_likelihood = likelihood / n_obs
+    estimation_tracking = [(0, "item", likelihood, n_obs, avg_likelihood), (0, "mastery", likelihood, n_obs, avg_likelihood)]
     for it in range(n_iter):
         if infer_item:
-            df = mi.batch_item_estimation(df)
+            df = mi.batch_item_estimation(df, tune_discrimination=tune_discrimination)
+            n_obs = len(df)
+            n_items = df[ColumnMapping.estimate_question_id].nunique()
+            item_pct = 100 * n_items / total_items
             likelihood = mi.total_likelihood(df)
-            estimation_tracking.append((it + 1, "item", likelihood))
+            avg_likelihood = likelihood / n_obs
+            estimation_tracking.append((it + 1, "item", likelihood, n_obs, avg_likelihood))
             logging.info(
-                f"iteration: {it}, step: item estimation, total likelihood{likelihood}"
+                f"iteration: {it}, step: item estimation, items: {n_items}/{total_items} ({item_pct:.1f}%), "
+                f"n_obs: {n_obs}, avg likelihood: {avg_likelihood:.6f}"
             )
 
         if infer_mastery:
-            df = mi.batch_mastery_estimation(df, granularity_col=granularity)
+            df = mi.batch_mastery_estimation(df, granularity_col=granularity, using_window_col=using_window_col)
+            n_obs = len(df)
             likelihood = mi.total_likelihood(df)
-            estimation_tracking.append((it + 1, "mastery", likelihood))
+            avg_likelihood = likelihood / n_obs
+            estimation_tracking.append((it + 1, "mastery", likelihood, n_obs, avg_likelihood))
             logging.info(
-                f"iteration: {it}, step: mastery estimation, total likelihood{likelihood}"
+                f"iteration: {it}, step: mastery estimation, total likelihood: {likelihood}, n_obs: {n_obs}, avg: {avg_likelihood:.6f}"
             )
 
         if len(estimation_tracking) >= 4:
-            benefit_mastery = estimation_tracking[-1][2] - estimation_tracking[-3][2]
-            benefit_item = estimation_tracking[-2][2] - estimation_tracking[-4][2]
-            if (benefit_mastery < tol) and (benefit_item < tol):
+            # Use percentage improvement in average likelihood for convergence
+            prev_avg_mastery = estimation_tracking[-3][4]
+            curr_avg_mastery = estimation_tracking[-1][4]
+            prev_avg_item = estimation_tracking[-4][4]
+            curr_avg_item = estimation_tracking[-2][4]
+
+            relative_benefit_mastery = (curr_avg_mastery - prev_avg_mastery) / abs(prev_avg_mastery)
+            relative_benefit_item = (curr_avg_item - prev_avg_item) / abs(prev_avg_item)
+
+            if (0 < relative_benefit_mastery < tol) and (0 < relative_benefit_item < tol):
                 logging.info(
-                    f"optimisation stopped at iteration {it}, as likelihood improvement is less than the tolerance level {tol}"
+                    f"optimisation stopped at iteration {it}, mastery improvement: {relative_benefit_mastery:.4%}, "
+                    f"item improvement: {relative_benefit_item:.4%}, tolerance: {tol:.4%}"
                 )
                 break
 
@@ -82,7 +109,7 @@ def run_mle(
         df[ColumnMapping.discrimination].values,
     )
     estimation_tracking = pd.DataFrame.from_records(
-        estimation_tracking, columns=["iter", "step", "likelihood"]
+        estimation_tracking, columns=["iter", "step", "likelihood", "n_obs", "avg_likelihood"]
     )
     return estimation_tracking, df
 
@@ -146,22 +173,28 @@ def estimation_histogram(df, title="Histogram", file_name=None, display=True):
 def get_result(
     train_result,
     granularity,
-    original_questions_dificulties: Dict[str, float],
+    original_questions_dificulties: Dict[str, dict],
     file_path=None,
-    outfile: TextIO | None = None,
+    outfile_suffix: str | None = None,
+    using_window_col=False,
 ):
+    # Determine grouping columns for mastery
+    group_cols = [ColumnMapping.student_id, granularity]
+    if using_window_col:
+        group_cols.append(ColumnMapping.window_index)
+
     estimated_mastery = (
-        train_result.groupby([ColumnMapping.student_id, granularity], as_index=False)
+        train_result.groupby(group_cols, as_index=False)
         .agg(
             {
                 ColumnMapping.mastery: "mean",
-                ColumnMapping.question_id: pd.Series.nunique,
+                ColumnMapping.estimate_question_id: pd.Series.nunique,
             }
         )
-        .rename(columns={ColumnMapping.question_id: "n_question"})
+        .rename(columns={ColumnMapping.estimate_question_id: "n_question"})
     )
     estimated_difficulty = (
-        train_result.groupby([ColumnMapping.question_id], as_index=False)
+        train_result.groupby([ColumnMapping.estimate_question_id], as_index=False)
         .agg(
             {
                 ColumnMapping.difficulty: "mean",
@@ -172,30 +205,33 @@ def get_result(
         .rename(columns={ColumnMapping.student_id: "n_student"})
     )
 
+    # Look up original difficulty by version_id (only exists for latest versions)
     estimated_difficulty["OriginalDifficulty"] = estimated_difficulty[
-        ColumnMapping.question_id
-    ].apply(lambda q_id: original_questions_dificulties.get(q_id))
-    estimated_difficulty["CalibratedDifficulty"] = (
-        estimated_difficulty[ColumnMapping.difficulty]
-        - estimated_difficulty[ColumnMapping.difficulty].min()
-    ) / (
-        estimated_difficulty[ColumnMapping.difficulty].max()
-        - estimated_difficulty[ColumnMapping.difficulty].min()
+        ColumnMapping.estimate_question_id
+    ].apply(lambda v_id: original_questions_dificulties.get(v_id, {}).get('difficulty'))
+
+    # Filter to only items with original difficulty (i.e., latest versions)
+    estimated_difficulty_latest = estimated_difficulty[
+        estimated_difficulty["OriginalDifficulty"].notna()
+    ].copy()
+    estimated_difficulty_latest["CalibratedDifficulty"] = logistic_cdf(
+        estimated_difficulty_latest[ColumnMapping.difficulty]
     )
-    estimated_difficulty["DifficultiesDifference abs(Original-Calibrated)"] = (
-        estimated_difficulty["CalibratedDifficulty"]
-        - estimated_difficulty["OriginalDifficulty"]
+    estimated_difficulty_latest["DifficultiesDifference abs(Original-Calibrated)"] = (
+        estimated_difficulty_latest["CalibratedDifficulty"]
+        - estimated_difficulty_latest["OriginalDifficulty"]
     ).abs()
 
-    if outfile:
-        estimated_difficulty.to_csv(outfile, index=False)
-        logging.info("estimated difficulty saved to outfile")
+    if outfile_suffix:
+        with open(f"difficulties_{outfile_suffix}.csv", "w") as f:
+            estimated_difficulty_latest.to_csv(f, index=False)
+            logging.info("estimated difficulty saved to outfile")
 
     if file_path:
         mastery_file = os.path.join(file_path, "estimated_mastery.csv")
         difficulty_file = os.path.join(file_path, "estimated_item.csv")
         estimated_mastery.to_csv(mastery_file)
-        estimated_difficulty.to_csv(difficulty_file, index=False)
+        estimated_difficulty_latest.to_csv(difficulty_file, index=False)
         logging.info(
             f"estimated mastery and difficulty are saved as files {mastery_file} and {difficulty_file}"
         )
@@ -203,7 +239,12 @@ def get_result(
     return estimated_mastery, estimated_difficulty
 
 
-def calc_test_result(estimated_mastery, estimated_difficulty, test_data, granularity):
+def calc_test_result(estimated_mastery, estimated_difficulty, test_data, granularity, using_window_col=False):
+    # Determine merge columns for mastery
+    merge_cols = [ColumnMapping.student_id, granularity]
+    if using_window_col:
+        merge_cols.append(ColumnMapping.window_index)
+
     # predict on the test data
     df = (
         test_data.drop(
@@ -212,9 +253,9 @@ def calc_test_result(estimated_mastery, estimated_difficulty, test_data, granula
             errors="ignore",
         )
         .merge(
-            estimated_mastery, on=[ColumnMapping.student_id, granularity], how="inner"
+            estimated_mastery, on=merge_cols, how="inner"
         )
-        .merge(estimated_difficulty, on=[ColumnMapping.question_id], how="inner")
+        .merge(estimated_difficulty, on=[ColumnMapping.estimate_question_id], how="inner")
     )
     df[ColumnMapping.p_correct] = mi.p_correct(
         df[ColumnMapping.mastery].values,
@@ -233,14 +274,14 @@ def benchmark_gbm(train_data, test_data, **kwargs):
 
     show_graph = kwargs.get("display", kwargs.get("show_graph", False))
     train_data["question_num_id"] = (
-        train_data[ColumnMapping.question_id].astype("category").cat.codes
+        train_data[ColumnMapping.estimate_question_id].astype("category").cat.codes
     )
     test_df_sub = test_data.merge(
         train_data[[ColumnMapping.student_id]].drop_duplicates(),
         on=[ColumnMapping.student_id],
     ).merge(
-        train_data[[ColumnMapping.question_id, "question_num_id"]].drop_duplicates(),
-        on=[ColumnMapping.question_id],
+        train_data[[ColumnMapping.estimate_question_id, "question_num_id"]].drop_duplicates(),
+        on=[ColumnMapping.estimate_question_id],
     )
     X_train = train_data[[ColumnMapping.student_id, "question_num_id"]].values
     y_train = train_data[ColumnMapping.score].values
@@ -281,27 +322,37 @@ def benchmark_gbm(train_data, test_data, **kwargs):
     return model
 
 
-def get_questions_difficulties(df) -> Dict[str, float]:
+def get_questions_difficulties(df) -> Dict[str, dict]:
+    # Filter to only latest versions
+    latest_versions = df[
+        df[ColumnMapping.estimate_question_id] == df[ColumnMapping.latest_question_version_id]
+    ]
+
+    # Return dict keyed by version_id with public_id and difficulty
     return {
-        question_id: difficulty
-        for question_id, difficulty in df[
-            [ColumnMapping.question_id, ColumnMapping.difficulty]
+        version_id: {
+            'public_id': public_id,
+            'difficulty': difficulty
+        }
+        for version_id, public_id, difficulty in latest_versions[
+            [ColumnMapping.estimate_question_id, ColumnMapping.question_public_id, ColumnMapping.difficulty]
         ]
         .drop_duplicates()
         .values
     }
 
 
-def run(config: ConfigParser, df: pd.DataFrame, outfile: TextIO):
+def run(config: ConfigParser, df: pd.DataFrame, outfile_suffix: str):
     inference_config = config["inference"]
 
-    result_folder = Path(inference_config["result_folder"])
+    result_folder = Path(inference_config["result_folder"], outfile_suffix)
     result_folder.mkdir(exist_ok=True, parents=True)
-    granularity_col = inference_config["granularity_col"]
+    granularity = inference_config["granularity_col"]
     n_iter = inference_config.getint("n_iter", 15)
-    tol = inference_config.getfloat("tol", 0.1)
+    tol = inference_config.getfloat("tol", 0.01)  # Default 1% relative improvement
     infer_mastery = inference_config.getboolean("infer_mastery", True)
     infer_item = inference_config.getboolean("infer_item", True)
+    tune_discrimination = inference_config.getboolean("tune_discrimination", False)
     is_benchmark = inference_config.getboolean("is_benchmark", False)
     show_graph = inference_config.getboolean("show_graph", False)
     random_seed = inference_config.getint("random_seed", 123)
@@ -310,14 +361,24 @@ def run(config: ConfigParser, df: pd.DataFrame, outfile: TextIO):
 
     np.random.seed(random_seed)
 
+    granularity_col = getattr(ColumnMapping, granularity)
+    if granularity_col is None:
+        raise ValueError(f"granularity_col {granularity} is not a valid ColumnMapping attribute")
+
     qa_history = df
+    
+    group_cols = [ColumnMapping.student_id, granularity_col]
+    using_window_col = ColumnMapping.window_index in qa_history.columns
+    if using_window_col:
+        group_cols.append(ColumnMapping.window_index)
+    # Filter by student-granularity (across all windows)
     qa_history = mi.remove_groups_with_insufficient_data(
-        qa_history, [ColumnMapping.question_id], min_obs
+        qa_history, group_cols, min_obs
     )
     original_difficulties = get_questions_difficulties(qa_history)
     train_df, test_df = mi.split_train_test_data_on_group(
         qa_history,
-        [ColumnMapping.student_id, ColumnMapping.question_id],
+        [ColumnMapping.student_id, ColumnMapping.estimate_question_id],
         ratio=split_ratio,
     )
     logging.info(
@@ -329,6 +390,7 @@ def run(config: ConfigParser, df: pd.DataFrame, outfile: TextIO):
         granularity_col,
         infer_mastery=infer_mastery,
         infer_item=infer_item,
+        tune_discrimination=tune_discrimination,
         n_iter=n_iter,
         tol=tol,
     )
@@ -348,7 +410,8 @@ def run(config: ConfigParser, df: pd.DataFrame, outfile: TextIO):
         granularity_col,
         original_questions_dificulties=original_difficulties,
         file_path=result_folder,
-        outfile=outfile,
+        outfile_suffix=outfile_suffix,
+        using_window_col=using_window_col,
     )
     auc_train = roc_plot(
         df_estimation,
@@ -359,7 +422,7 @@ def run(config: ConfigParser, df: pd.DataFrame, outfile: TextIO):
     logging.info(f"training ROC AUC score is {auc_train}")
 
     test_df_estimated = calc_test_result(
-        trained_mastery, trained_difficulty, test_df, granularity_col
+        trained_mastery, trained_difficulty, test_df, granularity_col, using_window_col=using_window_col
     )
     auc_test = roc_plot(
         test_df_estimated,

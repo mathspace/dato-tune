@@ -1,3 +1,4 @@
+import logging
 import math
 
 import numpy as np
@@ -161,16 +162,19 @@ def remove_groups_with_insufficient_data(df, group_cols, min_obs):
     )
 
 
-def batch_item_estimation(data, default_values=None, **kwargs):
+def batch_item_estimation(data, default_values=None, tune_discrimination=False, **kwargs):
     if default_values is None:
         default_values = [0.0, 1.0]
 
     # set bounds
-    difficulty_step_size = kwargs.get("difficulty_step_size", 1.0)
-    difficulty_limit = kwargs.get("difficulty_limit", (-5.0, 5.0))
-    discrimination_step_size = kwargs.get("discrimination_step_size", 0.5)
-    discrimination_limit = kwargs.get("discrimination_limit", (0.8, 1.2))
-
+    difficulty_step_size = kwargs.get("difficulty_step_size", 0.5)
+    difficulty_limit = kwargs.get("difficulty_limit", (-3.0, 3.0))
+    if tune_discrimination:
+        discrimination_step_size = kwargs.get("discrimination_step_size", 0.1)
+        discrimination_limit = kwargs.get("discrimination_limit", (0.0, 2.0))
+    else:
+        discrimination_step_size = kwargs.get("discrimination_step_size", 0.01)
+        discrimination_limit = kwargs.get("discrimination_limit", (0.95, 1.05))
     def get_difficulty_bounds(d0):
         return (
             max(d0 - difficulty_step_size, difficulty_limit[0]),
@@ -197,7 +201,7 @@ def batch_item_estimation(data, default_values=None, **kwargs):
         out[1:] = opt_results.x
         return out
 
-    res = data.groupby([ColumnMapping.question_id]).apply(func)
+    res = data.groupby([ColumnMapping.estimate_question_id]).apply(func)
     df_res = pd.DataFrame(
         res.values.tolist(),
         columns=["success", ColumnMapping.difficulty, ColumnMapping.discrimination],
@@ -207,6 +211,13 @@ def batch_item_estimation(data, default_values=None, **kwargs):
     df_res.loc[mask_failed, ColumnMapping.difficulty] = default_values[0]
     df_res.loc[mask_failed, ColumnMapping.discrimination] = default_values[1]
 
+    # Reset extreme discrimination values to prevent feedback loop
+    mask_extreme = df_res[ColumnMapping.discrimination] >= 1.95
+    n_reset = mask_extreme.sum()
+    if n_reset > 0:
+        logging.info(f"Resetting {n_reset} items with extreme discrimination values (>= 1.95) to 1.0")
+    df_res.loc[mask_extreme, ColumnMapping.discrimination] = 1.0
+
     cols = [
         col
         for col in data.columns
@@ -215,15 +226,20 @@ def batch_item_estimation(data, default_values=None, **kwargs):
     ]
 
     return pd.merge(
-        data[cols], df_res.reset_index(), on=ColumnMapping.question_id, validate="m:1"
+        data[cols], df_res.reset_index(), on=ColumnMapping.estimate_question_id, validate="m:1"
     )
 
 
 def batch_mastery_estimation(
-    data, granularity_col=ColumnMapping.grade_strand_id, default_value=0.0, **kwargs
+    data, granularity_col=ColumnMapping.grade_strand_id, using_window_col=False, default_value=0.0, **kwargs
 ):
     mastery_step_size = kwargs.get("mastery_step_size", 1.0)
     mastery_limit = kwargs.get("mastery_limit", (-5.0, 5.0))
+
+    # Determine grouping columns
+    group_cols = [ColumnMapping.student_id, granularity_col]
+    if using_window_col:
+        group_cols.append(ColumnMapping.window_index)
 
     def set_bounds(m0):
         return (
@@ -245,12 +261,19 @@ def batch_mastery_estimation(
         out[1] = opt_results.x
         return out
 
-    res = data.groupby([ColumnMapping.student_id, granularity_col]).apply(func)
+    res = data.groupby(group_cols).apply(func)
     df_res = pd.DataFrame(
         res.values.tolist(), columns=["success", ColumnMapping.mastery], index=res.index
     )
     mask_failed = df_res.success < 0.5
     df_res.loc[mask_failed, ColumnMapping.mastery] = default_value
+
+    # Drop only mastery values that hit the exact bounds (optimizer constraint failure)
+    mask_extreme = df_res[ColumnMapping.mastery].abs() >= 4.99
+    n_dropped = mask_extreme.sum()
+    if n_dropped > 0:
+        logging.info(f"Dropping {n_dropped} student-mastery pairs that hit bounds (|mastery| >= 4.99)")
+    df_res = df_res[~mask_extreme]
 
     cols = [
         col for col in data.columns if col not in ["success", ColumnMapping.mastery]
@@ -259,7 +282,7 @@ def batch_mastery_estimation(
     return pd.merge(
         data[cols],
         df_res.reset_index(),
-        on=[ColumnMapping.student_id, granularity_col],
+        on=group_cols,
         validate="m:1",
     )
 

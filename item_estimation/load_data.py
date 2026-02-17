@@ -69,6 +69,7 @@ def preprocess_qa_df(
     # use only the data from the first catalog
     df = df.loc[df[ColumnMapping.curriculum_id] == curriculum_id].copy()
 
+
     if add_default_values:
         df[ColumnMapping.difficulty] = kwargs.get("default_difficulty", 0.0)
         df[ColumnMapping.discrimination] = kwargs.get("default_discrimination", 1.0)
