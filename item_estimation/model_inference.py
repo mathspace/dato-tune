@@ -162,6 +162,26 @@ def remove_groups_with_insufficient_data(df: pl.DataFrame, group_cols: list, min
     return df.join(sufficient, on=group_cols, how="inner")
 
 
+
+def remove_groups_with_all_incorrect(df: pl.DataFrame, group_cols: list):
+    has_correct = (
+        df.group_by(group_cols)
+        .agg((pl.col(ColumnMapping.score) > 0).any().alias("any_correct"))
+        .filter(pl.col("any_correct"))
+        .select(group_cols)
+    )
+    return df.join(has_correct, on=group_cols, how="inner")
+
+
+def remove_groups_with_all_correct(df: pl.DataFrame, group_cols: list):
+    has_incorrect = (
+        df.group_by(group_cols)
+        .agg((pl.col(ColumnMapping.score) == 0).any().alias("any_incorrect"))
+        .filter(pl.col("any_incorrect"))
+        .select(group_cols)
+    )
+    return df.join(has_incorrect, on=group_cols, how="inner")
+
 def batch_item_estimation(
     data: pl.DataFrame, default_values=None, tune_discrimination: bool = False, **kwargs
 ):

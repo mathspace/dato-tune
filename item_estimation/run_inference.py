@@ -381,6 +381,12 @@ def run(config: ConfigParser, df: pl.DataFrame, outfile_suffix: str):
         qa_history, group_cols, min_obs
     )
     logging.info(f"  {len(qa_history):,} rows remaining")
+    logging.info("filtering groups with all incorrect responses...")
+    qa_history = mi.remove_groups_with_all_incorrect(qa_history, group_cols)
+    logging.info(f"  {len(qa_history):,} rows remaining")
+    logging.info("filtering groups with all correct responses...")
+    qa_history = mi.remove_groups_with_all_correct(qa_history, group_cols)
+    logging.info(f"  {len(qa_history):,} rows remaining")
 
     logging.info("extracting question difficulties...")
     original_difficulties = get_questions_difficulties(qa_history)
