@@ -1,6 +1,7 @@
 import logging
 import os
 import pickle
+import hashlib
 from pathlib import Path
 
 import polars as pl
@@ -59,6 +60,7 @@ def preprocess_qa_df(
     df: pl.DataFrame,
     curriculum_id: int,
     add_default_values: bool = True,
+    student_sample_rate: float | None = None,
     **kwargs,
 ) -> pl.DataFrame:
     df = df.with_columns([
@@ -70,6 +72,7 @@ def preprocess_qa_df(
             .alias(ColumnMapping.completed_at),
     ])
     df = df.filter(pl.col(ColumnMapping.curriculum_id) == curriculum_id)
+    df = maybe_sample_students(df, student_sample_rate)
 
     if add_default_values:
         df = df.with_columns([
@@ -79,6 +82,44 @@ def preprocess_qa_df(
         ])
 
     return df
+
+
+def maybe_sample_students(
+    df: pl.DataFrame, student_sample_rate: float | None = None
+) -> pl.DataFrame:
+    if student_sample_rate is None or student_sample_rate == 1.0:
+        return df
+    if not 0.0 <= student_sample_rate <= 1.0:
+        raise ValueError(
+            f"student_sample_rate must be between 0 and 1 inclusive, got {student_sample_rate}"
+        )
+    if df.is_empty():
+        return df
+
+    unique_students = df.select(ColumnMapping.student_id).unique()
+    sampled_students = unique_students.with_columns(
+        pl.col(ColumnMapping.student_id)
+        .cast(pl.Utf8)
+        .map_elements(_student_sample_score, return_dtype=pl.Float64)
+        .alias("_student_sample_score")
+    ).filter(pl.col("_student_sample_score") < student_sample_rate)
+
+    logging.info(
+        "student sampling enabled at %.2f: kept %s/%s students",
+        student_sample_rate,
+        f"{sampled_students.height:,}",
+        f"{unique_students.height:,}",
+    )
+    return df.join(
+        sampled_students.select(ColumnMapping.student_id),
+        on=ColumnMapping.student_id,
+        how="inner",
+    )
+
+
+def _student_sample_score(student_id: str) -> float:
+    digest = hashlib.sha256(student_id.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") / 2**64
 
 
 def load_catalog_hierarchy(folder_name, level="question_id"):
