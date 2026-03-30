@@ -11,9 +11,9 @@ from rich.logging import RichHandler
 from configparser import ConfigParser, ExtendedInterpolation
 from contextlib import nullcontext
 from datetime import date, datetime
-from typing import Literal, TextIO
+from typing import Literal
 
-import pandas as pd
+import polars as pl
 
 logger = logging.getLogger(__name__)
 
@@ -86,13 +86,33 @@ def run_fetch_mathspace(
 
 
 def run_inference(
-    config: ConfigParser, infile: TextIO, outfile_suffix: str, curriculum_id: int
+    config: ConfigParser,
+    outfile_suffix: str,
+    curriculum_id: int,
+    lantern_infile: str | None = None,
+    mathspace_infile: str | None = None,
 ):
-    df = preprocess_qa_df(pd.read_csv(infile), curriculum_id, add_default_values=False)
-    run(config, df, outfile_suffix)
+    student_sample_rate = config["inference"].getfloat("student_sample_rate", fallback=1.0)
+    dfs = []
 
-def _input_file_context(filename: str):
-    return nullcontext(sys.stdin) if filename == "-" else open(filename, "r")
+    if lantern_infile is not None:
+        size_mb = os.path.getsize(lantern_infile) / 1_000_000
+        logger.info(f"loading lantern file: {lantern_infile} ({size_mb:.1f}MB)")
+        raw = pl.scan_csv(lantern_infile).collect()
+        logger.info(f"  {len(raw):,} rows")
+        dfs.append(preprocess_qa_df(raw, curriculum_id, add_default_values=False))
+
+    if mathspace_infile is not None:
+        size_mb = os.path.getsize(mathspace_infile) / 1_000_000
+        logger.info(f"loading mathspace file: {mathspace_infile} ({size_mb:.1f}MB)")
+        raw = pl.scan_csv(mathspace_infile).collect()
+        logger.info(f"  {len(raw):,} rows")
+        dfs.append(preprocess_qa_df(raw, curriculum_id, add_default_values=False, student_sample_rate=student_sample_rate))
+
+    df = pl.concat(dfs, how="diagonal_relaxed")
+    logger.info(f"  {len(df):,} rows after preprocessing")
+    logger.info("starting inference...")
+    run(config, df, outfile_suffix)
 
 
 def _output_file_context(filename: str):
@@ -182,7 +202,8 @@ def main():
     _add_common_fetch_args(fetch_mathspace_parser, window_required=True)
 
     inference_parser = subparsers.add_parser("infer")
-    _ = inference_parser.add_argument("--infile", type=str, default="-")
+    _ = inference_parser.add_argument("--lantern-infile", type=str, default=None, help="CSV file of Lantern responses.")
+    _ = inference_parser.add_argument("--mathspace-infile", type=str, default=None, help="CSV file of Mathspace responses. Student sampling applies to this file only.")
     _ = inference_parser.add_argument("--outfile-suffix", type=str, default="-")
     _ = inference_parser.add_argument("--curriculum-id", type=int, required=True)
 
@@ -212,8 +233,15 @@ def main():
     elif args.command == "fetch-mathspace":
         run_fetch_mathspace(args.outfile, args.curriculum_id, args.region, args.window_size, args.max_windows, args.window_index)
     elif args.command == "infer":
-        with _input_file_context(args.infile) as infile:
-            run_inference(config, infile, outfile_suffix=args.outfile_suffix, curriculum_id=args.curriculum_id)
+        if args.lantern_infile is None and args.mathspace_infile is None:
+            parser.error("at least one of --lantern-infile or --mathspace-infile is required")
+        run_inference(
+            config,
+            outfile_suffix=args.outfile_suffix,
+            curriculum_id=args.curriculum_id,
+            lantern_infile=args.lantern_infile,
+            mathspace_infile=args.mathspace_infile,
+        )
     else:
         parser.error(f"Invalid command: {args.command}")
 
