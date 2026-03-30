@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from configparser import ConfigParser
 from datetime import date
 from textwrap import dedent
@@ -195,6 +196,19 @@ def fetch_lantern_responses_windowed(
     return fetch_responses_from_snowflake(curriculum_id, region, query, limit, offset)
 
 
+def fetch_lantern_responses_windowed_batched(
+    curriculum_id: int,
+    region: Literal["au", "us"],
+    window_size_months: int,
+    outfile: str,
+    max_windows: int | None = None,
+    window_index: int | None = None,
+) -> None:
+    """Fetch all windowed lantern responses, streaming batches into a single outfile."""
+    query = _build_lantern_windowed_query(curriculum_id, window_size_months, max_windows, window_index)
+    _fetch_batched_to_file(region, query, outfile)
+
+
 def _build_mathspace_windowed_query(
     curriculum_id: int,
     window_size_months: int,
@@ -255,6 +269,51 @@ def fetch_mathspace_responses_windowed(
 ) -> pd.DataFrame:
     query = _build_mathspace_windowed_query(curriculum_id, window_size_months, max_windows, window_index)
     return fetch_responses_from_snowflake(curriculum_id, region, query, limit, offset)
+
+
+def fetch_mathspace_responses_windowed_batched(
+    curriculum_id: int,
+    region: Literal["au", "us"],
+    window_size_months: int,
+    outfile: str,
+    max_windows: int | None = None,
+    window_index: int | None = None,
+) -> None:
+    """Fetch all windowed mathspace responses, streaming batches into a single outfile."""
+    query = _build_mathspace_windowed_query(curriculum_id, window_size_months, max_windows, window_index)
+    _fetch_batched_to_file(region, query, outfile)
+
+
+def _fetch_batched_to_file(
+    region: Literal["au", "us"],
+    query: str,
+    outfile: str,
+) -> None:
+    """Stream query results from Snowflake in batches, appending each to a single outfile.
+
+    Batch sizes are determined by Snowflake's internal result chunking, so each batch
+    is held in memory only long enough to write it to disk.
+    """
+    conn = _get_snowflake_connection(region)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query)
+        total_rows = cursor.rowcount
+        rows_fetched = 0
+        start_time = time.time()
+        for i, batch_df in enumerate(cursor.fetch_pandas_batches()):
+            batch_df.to_csv(outfile, mode="a", header=(i == 0), index=False)
+            rows_fetched += len(batch_df)
+            elapsed = time.time() - start_time
+            if total_rows and total_rows > 0 and elapsed > 0:
+                pct = rows_fetched / total_rows * 100
+                eta = (total_rows - rows_fetched) / (rows_fetched / elapsed)
+                eta_str = f"{int(eta // 60)}m {int(eta % 60)}s"
+                logger.info(f"{rows_fetched:,} / {total_rows:,} rows | {pct:.1f}% | ETA {eta_str}")
+            else:
+                logger.info(f"{rows_fetched:,} rows fetched")
+    finally:
+        conn.close()
 
 
 def fetch_responses_from_snowflake(
