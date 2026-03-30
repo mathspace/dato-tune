@@ -7,6 +7,12 @@ logfile = ./run.log
 show_graph = no
 random_seed = 8192
 
+[snowflake]
+# Required.
+username =
+# If externalbrowser auth fails, export SNOWFLAKE_PASSWORD in the environment
+# for the username_password_mfa fallback.
+
 [inference]
 data_folder = ${common:data_folder}
 result_folder = ${common:result_folder}
