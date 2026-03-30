@@ -3,7 +3,7 @@ import os
 import pickle
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 
 from utils import ColumnMapping
 
@@ -15,7 +15,7 @@ class DataLoader:
         self.result_folder = Path(config.get("common", "result_folder"))
 
     def load_latern_responses(
-        self, df: pd.DataFrame, curriculum_id: int, add_default_values=False, **kwargs
+        self, df: pl.DataFrame, curriculum_id: int, add_default_values=False, **kwargs
     ):
         df = preprocess_qa_df(
             df, curriculum_id, add_default_values=add_default_values, **kwargs
@@ -54,75 +54,63 @@ class DataLoader:
             os.path.join(self.result_folder, "enriched_difficulty.csv")
         )
 
-        # todo: use dataloader to minimize string file names
-
 
 def preprocess_qa_df(
-    df: pd.DataFrame, curriculum_id: int, add_default_values: bool = True, **kwargs
-) -> pd.DataFrame:
-    df[ColumnMapping.score] = (df[ColumnMapping.result] == "CORRECT").astype(float)
-    df[ColumnMapping.dummy] = 1
-    df[ColumnMapping.completed_at] = pd.to_datetime(
-        df[ColumnMapping.completed_at]
-    ).dt.tz_localize(None)
-
-    # use only the data from the first catalog
-    df = df.loc[df[ColumnMapping.curriculum_id] == curriculum_id].copy()
-
+    df: pl.DataFrame,
+    curriculum_id: int,
+    add_default_values: bool = True,
+    **kwargs,
+) -> pl.DataFrame:
+    df = df.with_columns([
+        (pl.col(ColumnMapping.result) == "CORRECT").cast(pl.Float64).alias(ColumnMapping.score),
+        pl.lit(1).alias(ColumnMapping.dummy),
+        pl.col(ColumnMapping.completed_at)
+            .str.to_datetime(format="%Y-%m-%dT%H:%M:%S%:z", strict=False)
+            .dt.replace_time_zone(None)
+            .alias(ColumnMapping.completed_at),
+    ])
+    df = df.filter(pl.col(ColumnMapping.curriculum_id) == curriculum_id)
 
     if add_default_values:
-        df[ColumnMapping.difficulty] = kwargs.get("default_difficulty", 0.0)
-        df[ColumnMapping.discrimination] = kwargs.get("default_discrimination", 1.0)
-        df[ColumnMapping.mastery] = kwargs.get("default_mastery", 0.0)
+        df = df.with_columns([
+            pl.lit(kwargs.get("default_difficulty", 0.0)).cast(pl.Float64).alias(ColumnMapping.difficulty),
+            pl.lit(kwargs.get("default_discrimination", 1.0)).cast(pl.Float64).alias(ColumnMapping.discrimination),
+            pl.lit(kwargs.get("default_mastery", 0.0)).cast(pl.Float64).alias(ColumnMapping.mastery),
+        ])
 
     return df
 
 
 def load_catalog_hierarchy(folder_name, level="question_id"):
     drop_cols = ["description", "code", "title", "text", "option"]
-    grade = (
-        pd.read_csv(os.path.join(folder_name, "grade.csv"))
-        .rename(columns={"id": "grade_id", "sana_topic_id": "grade"})
-        .drop(drop_cols, axis=1, errors="ignore")
-    )
-    grade_strand = (
-        pd.read_csv(os.path.join(folder_name, "gradestrand.csv"))
-        .rename(columns={"id": "grade_strand_id", "sana_topic_id": "grade_strand"})
-        .drop(drop_cols, axis=1, errors="ignore")
-    )
-    outcome = (
-        pd.read_csv(os.path.join(folder_name, "outcome.csv"))
-        .rename(columns={"id": "outcome_id", "sana_topic_id": "outcome"})
-        .drop(drop_cols, axis=1, errors="ignore")
-    )
 
-    skill = (
-        pd.read_csv(os.path.join(folder_name, "skill.csv"))
-        .rename(columns={"id": "skill_id", "sana_topic_id": "skill"})
-        .drop(drop_cols, axis=1, errors="ignore")
-    )
+    def _read_and_rename(fname, id_col, sana_col):
+        df = pl.read_csv(os.path.join(folder_name, fname)).rename({
+            "id": id_col, "sana_topic_id": sana_col
+        })
+        return df.drop([c for c in drop_cols if c in df.columns])
 
-    question = pd.read_csv(os.path.join(folder_name, "question.csv")).rename(
-        columns={"id": "question_id"}
-    )[["question_id", "skill_id"]]
+    grade = _read_and_rename("grade.csv", "grade_id", "grade")
+    grade_strand = _read_and_rename("gradestrand.csv", "grade_strand_id", "grade_strand")
+    outcome = _read_and_rename("outcome.csv", "outcome_id", "outcome")
+    skill = _read_and_rename("skill.csv", "skill_id", "skill")
+
+    question = (
+        pl.read_csv(os.path.join(folder_name, "question.csv"))
+        .rename({"id": "question_id"})
+        .select(["question_id", "skill_id"])
+    )
 
     hierarchy = (
-        question.merge(
-            skill, on="skill_id", how="left", validate="m:1", suffixes=("", "_")
-        )
-        .merge(outcome, on="outcome_id", how="left", validate="m:1", suffixes=("", "_"))
-        .merge(
-            grade_strand,
-            on="grade_strand_id",
-            how="left",
-            validate="m:1",
-            suffixes=("", "_"),
-        )
-        .merge(grade, on="grade_id", how="left", validate="m:1", suffixes=("", "_"))
+        question
+        .join(skill, on="skill_id", how="left", suffix="_r")
+        .join(outcome, on="outcome_id", how="left", suffix="_r")
+        .join(grade_strand, on="grade_strand_id", how="left", suffix="_r")
+        .join(grade, on="grade_id", how="left", suffix="_r")
     )
-    hierarchy.drop(
-        [col for col in hierarchy.columns if col.endswith("_")], axis=1, inplace=True
-    )
+    # Drop any duplicate-suffix columns produced by joins
+    hierarchy = hierarchy.drop([c for c in hierarchy.columns if c.endswith("_r")])
+
     sorted_cols = [
         "question_id",
         "skill_id",
@@ -136,41 +124,41 @@ def load_catalog_hierarchy(folder_name, level="question_id"):
         idx = 0
     else:
         idx = sorted_cols.index(level)
-    hierarchy = hierarchy[sorted_cols[idx:]].drop_duplicates()
+    cols = [c for c in sorted_cols[idx:] if c in hierarchy.columns]
+    hierarchy = hierarchy.select(cols).unique()
     logging.info(f"load_hierarchy: loading curriculum hierarchy from {folder_name}")
-
     return hierarchy
 
 
 def load_snapshot_hierarchy(folder_name):
-    knowledgegraph_snapshot = pd.read_csv(
+    knowledgegraph_snapshot = pl.read_csv(
         os.path.join(folder_name, "knowledgegraph_snapshot.csv")
-    )
-    checkin = pd.read_csv(os.path.join(folder_name, "checkin.csv"))
+    ).rename({"id": "knowledge_graph_snapshot_id"})
 
-    snapshot_hierarchy = knowledgegraph_snapshot.rename(
-        columns={"id": "knowledge_graph_snapshot_id"}
-    ).merge(
-        checkin.rename(columns={"id": "check_in_id", "user_id": "student_id"}),
-        on="check_in_id",
-        how="left",
-        validate="1:1",
+    checkin = pl.read_csv(
+        os.path.join(folder_name, "checkin.csv")
+    ).rename({"id": "check_in_id", "user_id": "student_id"})
+
+    snapshot_hierarchy = (
+        knowledgegraph_snapshot
+        .join(checkin, on="check_in_id", how="left")
+        .drop_nulls()
     )
-    snapshot_hierarchy["started_at"] = pd.to_datetime(
-        snapshot_hierarchy["started_at"]
-    ).astype("<M8[ns]")
-    snapshot_hierarchy["ended_at"] = pd.to_datetime(
-        snapshot_hierarchy["ended_at"]
-    ).astype("<M8[ns]")
-    snapshot_hierarchy = snapshot_hierarchy.dropna()
-    for col in snapshot_hierarchy.columns:
-        if col.endswith("id"):
-            snapshot_hierarchy[col] = snapshot_hierarchy[col].astype(int)
+
+    snapshot_hierarchy = snapshot_hierarchy.with_columns([
+        pl.col("started_at").str.to_datetime(format=None, strict=False).cast(pl.Datetime("ns")).dt.replace_time_zone(None),
+        pl.col("ended_at").str.to_datetime(format=None, strict=False).cast(pl.Datetime("ns")).dt.replace_time_zone(None),
+    ])
+
+    id_cols = [c for c in snapshot_hierarchy.columns if c.endswith("id")]
+    snapshot_hierarchy = snapshot_hierarchy.with_columns([
+        pl.col(c).cast(pl.Int64) for c in id_cols
+    ])
     return snapshot_hierarchy
 
 
 def load_skill_snapshot(file_name):
-    df = pd.read_csv(file_name).rename(columns={"id": "skill_snapshot_id"})
+    df = pl.read_csv(file_name).rename({"id": "skill_snapshot_id"})
     for col in [
         "skill_snapshot_id",
         "knowledge_graph_snapshot_id",
@@ -179,20 +167,20 @@ def load_skill_snapshot(file_name):
         "true_proficiency_std",
     ]:
         assert col in df.columns, f"load_skill_snapshot: {col} not found in {file_name}"
-    logging.info(f"load_skill_snapshot: loading skill snapshot  from {file_name}")
+    logging.info(f"load_skill_snapshot: loading skill snapshot from {file_name}")
     return df
 
 
 def load_teacher_difficulty(file_name):
-    df = pd.read_csv(file_name)
-    df.rename(
-        columns={"Question": "question_id", "Question Difficulty": "difficulty"},
-        inplace=True,
+    df = (
+        pl.read_csv(file_name)
+        .rename({"Question": "question_id", "Question Difficulty": "difficulty"})
     )
-    df.columns = [col.lower().replace(" ", "_") for col in df.columns]
-    df["skill_id"] = df["skill"].str.split("-", expand=True).iloc[:, 1]
-    df["skill_id"] = df["skill_id"].astype(int)
-    df["discrimination"] = 1.0
+    df = df.rename({c: c.lower().replace(" ", "_") for c in df.columns})
+    df = df.with_columns([
+        pl.col("skill").str.split("-").list.get(1).cast(pl.Int64).alias("skill_id"),
+        pl.lit(1.0).alias("discrimination"),
+    ])
     logging.info(
         f"load_teacher_difficulty: loading teacher defined difficulty (cold start difficulty) from {file_name}"
     )
@@ -200,7 +188,7 @@ def load_teacher_difficulty(file_name):
 
 
 def load_estimated_difficulty(file_name):
-    df = pd.read_csv(file_name, index_col=0)
+    df = pl.read_csv(file_name)
     for col in ["difficulty", "discrimination", "question_id"]:
         assert col in df.columns, (
             f"load_estimated_difficulty: {col} not found in {file_name}!"
@@ -212,7 +200,7 @@ def load_estimated_difficulty(file_name):
 
 
 def load_estimated_mastery(file_name):
-    df = pd.read_csv(file_name, index_col=0)
+    df = pl.read_csv(file_name)
     cols = list(df.columns)
     for col in ["mastery", "student_id"]:
         assert col in cols, f"load_estimated_mastery: {col} not found in {file_name}!"
@@ -226,14 +214,13 @@ def load_estimated_mastery(file_name):
 
 
 def load_knowledge_graph(file_name):
-    # todo: this only loads a pickled object saved previously, should be done more properly
     skill_topics = pickle.load(open(file_name, "rb"))
     logging.info(f"load_knowledge_graph: loading knowledge graph from {file_name}")
     return skill_topics
 
 
 def load_enriched_difficulty(file_name):
-    df = pd.read_csv(file_name, index_col=0)
+    df = pl.read_csv(file_name)
     for col in ["difficulty", "discrimination", "question_id"]:
         assert col in df.columns, (
             f"load_enriched_difficulty: {col} not found in {file_name}!"
