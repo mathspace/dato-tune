@@ -62,9 +62,18 @@ def run_mle(
     n_obs = len(df)
     likelihood = mi.total_likelihood(df)
     avg_likelihood = likelihood / n_obs
+    mastery_group_cols = [ColumnMapping.student_id, granularity]
+    if using_window_col:
+        mastery_group_cols.append(ColumnMapping.window_index)
+
     estimation_tracking = [(0, likelihood, n_obs, avg_likelihood)]
     for it in range(n_iter):
+        had_extreme = False
+
         if infer_item:
+            df, disc_reset = mi.reset_extreme_discrimination(df)
+            df, mast_dropped = mi.drop_extreme_mastery(df, mastery_group_cols)
+            had_extreme = had_extreme or disc_reset or mast_dropped
             df = mi.batch_item_estimation(df, tune_discrimination=tune_discrimination)
             n_items = df[ColumnMapping.estimate_question_id].n_unique()
             item_pct = 100 * n_items / total_items
@@ -73,6 +82,9 @@ def run_mle(
             )
 
         if infer_mastery:
+            df, disc_reset = mi.reset_extreme_discrimination(df)
+            df, mast_dropped = mi.drop_extreme_mastery(df, mastery_group_cols)
+            had_extreme = had_extreme or mast_dropped
             df = mi.batch_mastery_estimation(df, granularity_col=granularity, using_window_col=using_window_col)
             logging.info(f"iteration: {it}, step: mastery estimation, n_obs: {len(df):,}")
 
@@ -83,6 +95,17 @@ def run_mle(
         logging.info(
             f"iteration: {it}, total likelihood: {likelihood}, n_obs: {n_obs}, avg: {avg_likelihood:.6f}"
         )
+
+        if had_extreme:
+            logging.info(f"iteration: {it}, extreme values were reset/dropped — skipping convergence check")
+            continue
+
+        if infer_item:
+            _, would_reset = mi.reset_extreme_discrimination(df, apply=False)
+            _, would_drop = mi.drop_extreme_mastery(df, mastery_group_cols, apply=False)
+            if would_reset or would_drop:
+                logging.info(f"iteration: {it}, pending resets/drops detected — skipping convergence check")
+                continue
 
         if len(estimation_tracking) >= 3:
             prev_avg = estimation_tracking[-2][3]

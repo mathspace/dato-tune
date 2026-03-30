@@ -162,7 +162,6 @@ def remove_groups_with_insufficient_data(df: pl.DataFrame, group_cols: list, min
     return df.join(sufficient, on=group_cols, how="inner")
 
 
-
 def remove_groups_with_all_incorrect(df: pl.DataFrame, group_cols: list):
     has_correct = (
         df.group_by(group_cols)
@@ -182,6 +181,56 @@ def remove_groups_with_all_correct(df: pl.DataFrame, group_cols: list):
     )
     return df.join(has_incorrect, on=group_cols, how="inner")
 
+
+def reset_extreme_discrimination(data: pl.DataFrame, threshold: float = 1.94, apply: bool = True) -> tuple[pl.DataFrame, bool]:
+    total_items = data[ColumnMapping.estimate_question_id].n_unique()
+    n_extreme = int(
+        data.filter(pl.col(ColumnMapping.discrimination) >= threshold)
+        [ColumnMapping.estimate_question_id].n_unique()
+    )
+    if n_extreme == 0:
+        return data, False
+    extreme_pct = 100 * n_extreme / total_items
+    if extreme_pct <= 5.0:
+        logging.info(
+            f"Skipping discrimination reset: {n_extreme}/{total_items} items at cap ({extreme_pct:.2f}%) — within 5% threshold"
+        )
+        return data, False
+    if not apply:
+        return data, True
+    logging.info(
+        f"Resetting {n_extreme}/{total_items} items with extreme discrimination (>= {threshold}) to 1.0 ({extreme_pct:.2f}%)"
+    )
+    return data.with_columns(
+        pl.when(pl.col(ColumnMapping.discrimination) >= threshold)
+            .then(1.0)
+            .otherwise(pl.col(ColumnMapping.discrimination))
+            .alias(ColumnMapping.discrimination)
+    ), True
+
+
+def drop_extreme_mastery(data: pl.DataFrame, group_cols: list, threshold: float = 4.99, apply: bool = True) -> tuple[pl.DataFrame, bool]:
+    total_groups = data.select(group_cols).unique().height
+    n_dropped = (
+        data.filter(pl.col(ColumnMapping.mastery).abs() >= threshold)
+        .select(group_cols)
+        .unique()
+        .height
+    )
+    if n_dropped == 0:
+        return data, False
+    drop_pct = 100 * n_dropped / total_groups
+    if drop_pct <= 0.5:
+        return data, False
+    if not apply:
+        return data, True
+    logging.info(
+        f"Dropping {n_dropped} unique student groups that hit bounds (|mastery| >= {threshold}) "
+        f"({drop_pct:.2f}% of {total_groups} groups)"
+    )
+    return data.filter(pl.col(ColumnMapping.mastery).abs() < threshold), True
+
+
 def batch_item_estimation(
     data: pl.DataFrame, default_values=None, tune_discrimination: bool = False, **kwargs
 ):
@@ -192,7 +241,7 @@ def batch_item_estimation(
     difficulty_limit = kwargs.get("difficulty_limit", (-3.0, 3.0))
     if tune_discrimination:
         discrimination_step_size = kwargs.get("discrimination_step_size", 0.1)
-        discrimination_limit = kwargs.get("discrimination_limit", (0.0, 2.0))
+        discrimination_limit = kwargs.get("discrimination_limit", (0.0, 1.95))
     else:
         discrimination_step_size = kwargs.get("discrimination_step_size", 0.01)
         discrimination_limit = kwargs.get("discrimination_limit", (0.95, 1.05))
@@ -215,10 +264,16 @@ def batch_item_estimation(
         d0 = float(df[ColumnMapping.difficulty].mean())
         v0 = float(df[ColumnMapping.discrimination].mean())
         call_kwargs = dict(kwargs)
+        difficulty_bounds = get_difficulty_bounds(d0)
+        discrimination_bounds = get_discrimination_bounds(v0)
         call_kwargs.update({
             "x0": [d0, v0],
             "method": "L-BFGS-B",
-            "bounds": [get_difficulty_bounds(d0), get_discrimination_bounds(v0)],
+            "bounds": optimize.Bounds(
+                [difficulty_bounds[0], discrimination_bounds[0]],
+                [difficulty_bounds[1], discrimination_bounds[1]],
+                keep_feasible=True,
+            ),
         })
         opt_results = estimate_item(m, r, **call_kwargs)
         return pl.DataFrame({
@@ -240,17 +295,6 @@ def batch_item_estimation(
             .otherwise(pl.col(ColumnMapping.discrimination))
             .alias(ColumnMapping.discrimination),
     ])
-
-    # Reset extreme discrimination values to prevent feedback loop
-    n_extreme = int((df_res[ColumnMapping.discrimination] >= 1.95).sum())
-    if n_extreme > 0:
-        logging.info(f"Resetting {n_extreme} items with extreme discrimination values (>= 1.95) to 1.0")
-    df_res = df_res.with_columns(
-        pl.when(pl.col(ColumnMapping.discrimination) >= 1.95)
-            .then(1.0)
-            .otherwise(pl.col(ColumnMapping.discrimination))
-            .alias(ColumnMapping.discrimination)
-    )
 
     cols = [
         col for col in data.columns
@@ -304,12 +348,6 @@ def batch_mastery_estimation(
             .otherwise(pl.col(ColumnMapping.mastery))
             .alias(ColumnMapping.mastery)
     )
-
-    # Drop rows that hit the exact bounds (optimizer constraint failure)
-    n_dropped = int((df_res[ColumnMapping.mastery].abs() >= 4.99).sum())
-    if n_dropped > 0:
-        logging.info(f"Dropping {n_dropped} student-mastery pairs that hit bounds (|mastery| >= 4.99)")
-    df_res = df_res.filter(pl.col(ColumnMapping.mastery).abs() < 4.99)
 
     cols = [col for col in data.columns if col not in ["success", ColumnMapping.mastery]]
 
