@@ -1,17 +1,78 @@
 from __future__ import annotations
 
 import logging
-import shutil
-import subprocess
-import tempfile
+import os
+from configparser import ConfigParser
 from datetime import date
 from textwrap import dedent
 from typing import Literal, assert_type
 
 import pandas as pd
+import snowflake.connector
 
 
 logger = logging.getLogger(__name__)
+
+
+def _load_repo_config() -> ConfigParser:
+    config = ConfigParser()
+    config.read("config.ini")
+    return config
+
+
+def _get_snowflake_user() -> str:
+    repo_config = _load_repo_config()
+    username = repo_config.get("snowflake", "username", fallback="").strip()
+    if username:
+        return username
+
+    raise RuntimeError(
+        "Could not find a Snowflake username. Set [snowflake] username in config.ini."
+    )
+
+
+def _get_snowflake_password() -> str | None:
+    return os.getenv("SNOWFLAKE_PASSWORD")
+
+
+def _build_snowflake_connect_kwargs(region: Literal["au", "us"]) -> dict[str, str | bool]:
+    account_name = "oua13326" if region == "us" else "pn30490.ap-southeast-2"
+    return {
+        "account": account_name,
+        "user": _get_snowflake_user(),
+        "role": "reporter",
+        "warehouse": "reporting",
+        "database": "data_science",
+        "schema": "public",
+    }
+
+
+def _get_snowflake_connection(region: Literal["au", "us"]) -> snowflake.connector.SnowflakeConnection:
+    connect_kwargs = _build_snowflake_connect_kwargs(region)
+    try:
+        return snowflake.connector.connect(
+            **connect_kwargs,
+            authenticator="externalbrowser",
+            client_store_temporary_credential=True,
+        )
+    except Exception as browser_exc:
+        password = _get_snowflake_password()
+        if not password:
+            raise RuntimeError(
+                "Snowflake externalbrowser authentication failed and no fallback password "
+                "was found. Export SNOWFLAKE_PASSWORD for username_password_mfa."
+            ) from browser_exc
+
+        logger.warning(
+            "Snowflake externalbrowser authentication failed; falling back to username_password_mfa"
+        )
+        return snowflake.connector.connect(
+            **connect_kwargs,
+            authenticator="username_password_mfa",
+            password=password,
+            client_store_temporary_credential=True,
+        )
+
 
 def fetch_lantern_repsonses_range(
     curriculum_id: int,
@@ -33,14 +94,14 @@ def fetch_lantern_repsonses_range(
             cold_start_difficulty,
             result,
             created_at,
-            curriculum_id
+            curriculum_id,
         FROM DATA_SCIENCE.PREPROCESSING.LANTERN_RESPONSES
         WHERE created_at >= '{begin_date.isoformat()}'
             AND created_at <= '{end_date.isoformat()}'
             AND curriculum_id = '{curriculum_id}'
     """)
 
-    return fetch_lantern_responses_from_snowflake(curriculum_id, region, query)
+    return fetch_responses_from_snowflake(curriculum_id, region, query)
 
 # We want to maintain data localised in time. Student ability is expected to change over
 # time, so we can't expect a single student's data ranging over long period of time
@@ -109,68 +170,23 @@ def fetch_lantern_responses_windowed(
         WHERE lr.curriculum_id = '{curriculum_id}'
     """)
 
-    return fetch_lantern_responses_from_snowflake(curriculum_id, region, query)
+    return fetch_responses_from_snowflake(curriculum_id, region, query)
 
-def fetch_lantern_responses_from_snowflake(
+
+def fetch_responses_from_snowflake(
     curriculum_id: int,
     region: Literal["au", "us"],
     query: str,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> pd.DataFrame:
-    
     assert_type(curriculum_id, int)
-
-    account_name = "oua13326" if region == "us" else "pn30490.ap-southeast-2"
-
-
-    if shutil.which("snowsql") is None:
-        raise RuntimeError(
-            "snowsql not found - please install SnowSQL from https://docs.snowflake.com/en/user-guide/snowsql-install-config.html"
-        )
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv") as temp_outfile:
-        try:
-            cmd = [
-                "snowsql",
-                "--accountname",
-                account_name,
-                "--authenticator",
-                "externalbrowser",
-                "--warehouse",
-                "reporting",
-                "--dbname",
-                "data_science",
-                "--schemaname",
-                "public",
-                "--option",
-                "output_format=csv",
-                "--option",
-                "header=true",
-                "--option",
-                "timing=false",
-                "--option",
-                "friendly=false",
-                "--option",
-                f"output_file={temp_outfile.name}",
-                "--query",
-                query,
-            ]
-
-            logging.info(
-                "Fetching data from Snowflake... (web browser will open for authentication)"
-            )
-            _ = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(
-                f"Failed to fetch data from Snowflake.\n\nSTDERR: {e.stderr}\n\nSTDOUT: {e.output}"
-            )
-
-        try:
-            df = pd.read_csv(temp_outfile.name)
-            return df
-        except Exception as e:
-            raise RuntimeError(f"Failed to process Snowflake data.\nError: {e}")
+    if limit is not None:
+        query = f"SELECT * FROM ({query.strip()}) LIMIT {limit} OFFSET {offset}"
+    conn = _get_snowflake_connection(region)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query)
+        return cursor.fetch_pandas_all()
+    finally:
+        conn.close()
