@@ -29,3 +29,6 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 module-name = "item_estimation"
 module-root = ""
+
+[tool.uv]
+exclude-newer = "7 days"
