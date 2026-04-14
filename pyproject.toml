@@ -33,4 +33,5 @@ module-name = "item_estimation"
 module-root = ""
 
 [tool.uv]
+required-version = ">=0.11.6"
 exclude-newer = "7 days"
