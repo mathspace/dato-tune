@@ -22,13 +22,29 @@ random_seed = ${common:random_seed}
 
 # set the following for each run if needed
 granularity_col = dummy
+# Optional comma-separated staged granularities. When set, this overrides
+# granularity_col; earlier stages are written under stage_<n>_<granularity>/,
+# and the final stage is written to the top-level result folder.
+# granularity_sequence = grade_substrand_id,skill_id
 n_iter = 15
 tol = 0.01
 infer_mastery = yes
 infer_item = yes
 tune_discrimination = no
-is_benchmark = no
-min_obs = 10
+mastery_l2_penalty = 0.0
+item_discrimination_l2_penalty = 0.0
+# Additive linear trust-region step for item discrimination.
+# When tune_discrimination = yes, a useful starting value is 0.2.
+discrimination_step_size = 0.01
+min_obs = 5
+# Item freeze support thresholds can be a single value for all stages, or one
+# value per granularity if granularity_sequence is enabled.
+item_freeze_min_response_support = 10
+item_freeze_min_student_support = 10
+item_low_response_support_threshold = 10
+item_low_student_support_threshold = 10
+mastery_correct_rate_tolerance = 0.1
+item_freeze_correct_rate_tolerance = 0.2
 split_ratio = 0.2
 student_sample_rate = 1.0
 
