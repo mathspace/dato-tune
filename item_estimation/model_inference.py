@@ -1,13 +1,14 @@
-import logging
 import math
 
 import numpy as np
 import polars as pl
 from numba import float64, njit, vectorize
 from scipy import optimize
-from scipy.stats import logistic
 
 from utils import ColumnMapping
+
+
+ITEM_PARAMETER_FROZEN_COL = "is_item_parameter_frozen"
 
 
 @vectorize([float64(float64)])
@@ -54,18 +55,6 @@ def likelihood_mastery(mastery, d, v, r):
     return likelihood(m, d, v, r)
 
 
-@njit([float64(float64[:], float64, float64[:], float64[:])])
-def likelihood_difficulty(m, difficulty, v, r):
-    d = np.repeat(difficulty, len(r))
-    return likelihood(m, d, v, r)
-
-
-@njit([float64(float64[:], float64[:], float64, float64[:])])
-def likelihood_discrimination(m, d, discrimination, r):
-    v = np.repeat(discrimination, len(r))
-    return likelihood(m, d, v, r)
-
-
 @njit([float64(float64[:], float64, float64, float64[:])])
 def likelihood_item(m, difficulty, discrimination, r):
     d = np.repeat(difficulty, len(r))
@@ -75,56 +64,38 @@ def likelihood_item(m, difficulty, discrimination, r):
 
 ## Numba estimation function
 def estimate_mastery(d, v, r, **kwargs):
-    def h(m):
-        return -likelihood_mastery(m, d, v, r)
+    mastery_l2_penalty = kwargs.pop("mastery_l2_penalty", 0.0)
+    if mastery_l2_penalty < 0:
+        raise ValueError(f"mastery_l2_penalty must be non-negative, got {mastery_l2_penalty}")
 
-    return optimize.minimize_scalar(h, **kwargs)
-
-
-def estimate_difficulty(m, v, r, **kwargs):
-    def h(d):
-        return -likelihood_difficulty(m, d, v, r)
+    if mastery_l2_penalty == 0.0:
+        def h(m):
+            return -likelihood_mastery(m, d, v, r)
+    else:
+        def h(m):
+            return -likelihood_mastery(m, d, v, r) + mastery_l2_penalty * (m ** 2)
 
     return optimize.minimize_scalar(h, **kwargs)
 
 
 def estimate_item(m, r, **kwargs):
-    def h(item_params):
-        d, v = item_params
-        return -likelihood_item(m, d, v, r)
+    item_discrimination_l2_penalty = kwargs.pop("item_discrimination_l2_penalty", 0.0)
+    if item_discrimination_l2_penalty < 0:
+        raise ValueError(
+            f"item_discrimination_l2_penalty must be non-negative, got {item_discrimination_l2_penalty}"
+        )
 
-    if "x0" not in kwargs.keys():
-        kwargs["x0"] = [0.0, 1.0]
-    return optimize.minimize(h, **kwargs)
-
-
-## Scipy estimation function only for benchmark purpose
-
-
-def likelihood_scipy(m, d, v, r):
-    return np.sum(logistic.logcdf(v * (m - d)) * r) + np.sum(
-        logistic.logsf(v * (m - d)) * (1 - r)
-    )
-
-
-def estimate_mastery_scipy(d, v, r, **kwargs):
-    def h(m):
-        return -likelihood_scipy(m, d, v, r)
-
-    return optimize.minimize_scalar(h, **kwargs)
-
-
-def estimate_difficulty_scipy(m, v, r, **kwargs):
-    def h(d):
-        return -likelihood_scipy(m, d, v, r)
-
-    return optimize.minimize_scalar(h, **kwargs)
-
-
-def estimate_item_scipy(m, r, **kwargs):
-    def h(item_params):
-        d, v = item_params
-        return -likelihood_scipy(m, d, v, r)
+    if item_discrimination_l2_penalty == 0.0:
+        def h(item_params):
+            d, v = item_params
+            return -likelihood_item(m, d, v, r)
+    else:
+        def h(item_params):
+            d, v = item_params
+            return (
+                -likelihood_item(m, d, v, r)
+                + item_discrimination_l2_penalty * ((v - 1.0) ** 2)
+            )
 
     if "x0" not in kwargs.keys():
         kwargs["x0"] = [0.0, 1.0]
@@ -162,125 +133,237 @@ def remove_groups_with_insufficient_data(df: pl.DataFrame, group_cols: list, min
     return df.join(sufficient, on=group_cols, how="inner")
 
 
-def remove_groups_with_all_incorrect(df: pl.DataFrame, group_cols: list):
-    has_correct = (
+def remove_groups_outside_correct_rate_range(
+    df: pl.DataFrame,
+    group_cols: list,
+    min_correct_rate: float = 0.1,
+    max_correct_rate: float = 0.9,
+):
+    in_range = (
         df.group_by(group_cols)
-        .agg((pl.col(ColumnMapping.score) > 0).any().alias("any_correct"))
-        .filter(pl.col("any_correct"))
-        .select(group_cols)
-    )
-    return df.join(has_correct, on=group_cols, how="inner")
-
-
-def remove_groups_with_all_correct(df: pl.DataFrame, group_cols: list):
-    has_incorrect = (
-        df.group_by(group_cols)
-        .agg((pl.col(ColumnMapping.score) == 0).any().alias("any_incorrect"))
-        .filter(pl.col("any_incorrect"))
-        .select(group_cols)
-    )
-    return df.join(has_incorrect, on=group_cols, how="inner")
-
-
-def reset_extreme_discrimination(data: pl.DataFrame, threshold: float = 1.94, apply: bool = True) -> tuple[pl.DataFrame, bool]:
-    total_items = data[ColumnMapping.estimate_question_id].n_unique()
-    n_extreme = int(
-        data.filter(pl.col(ColumnMapping.discrimination) >= threshold)
-        [ColumnMapping.estimate_question_id].n_unique()
-    )
-    if n_extreme == 0:
-        return data, False
-    extreme_pct = 100 * n_extreme / total_items
-    if extreme_pct <= 5.0:
-        logging.info(
-            f"Skipping discrimination reset: {n_extreme}/{total_items} items at cap ({extreme_pct:.2f}%) — within 5% threshold"
+        .agg(pl.col(ColumnMapping.score).mean().alias("observed_correct_rate"))
+        .filter(
+            pl.col("observed_correct_rate").is_between(
+                min_correct_rate,
+                max_correct_rate,
+                closed="both",
+            )
         )
-        return data, False
-    if not apply:
-        return data, True
-    logging.info(
-        f"Resetting {n_extreme}/{total_items} items with extreme discrimination (>= {threshold}) to 1.0 ({extreme_pct:.2f}%)"
-    )
-    return data.with_columns(
-        pl.when(pl.col(ColumnMapping.discrimination) >= threshold)
-            .then(1.0)
-            .otherwise(pl.col(ColumnMapping.discrimination))
-            .alias(ColumnMapping.discrimination)
-    ), True
-
-
-def drop_extreme_mastery(data: pl.DataFrame, group_cols: list, threshold: float = 4.99, apply: bool = True) -> tuple[pl.DataFrame, bool]:
-    total_groups = data.select(group_cols).unique().height
-    n_dropped = (
-        data.filter(pl.col(ColumnMapping.mastery).abs() >= threshold)
         .select(group_cols)
-        .unique()
-        .height
     )
-    if n_dropped == 0:
-        return data, False
-    drop_pct = 100 * n_dropped / total_groups
-    if drop_pct <= 0.5:
-        return data, False
-    if not apply:
-        return data, True
-    logging.info(
-        f"Dropping {n_dropped} unique student groups that hit bounds (|mastery| >= {threshold}) "
-        f"({drop_pct:.2f}% of {total_groups} groups)"
+    return df.join(in_range, on=group_cols, how="inner")
+
+
+def get_groups_outside_correct_rate_range(
+    df: pl.DataFrame,
+    group_cols: list,
+    min_correct_rate: float = 0.1,
+    max_correct_rate: float = 0.9,
+) -> pl.DataFrame:
+    return (
+        df.group_by(group_cols)
+        .agg(pl.col(ColumnMapping.score).mean().alias("observed_correct_rate"))
+        .filter(
+            ~pl.col("observed_correct_rate").is_between(
+                min_correct_rate,
+                max_correct_rate,
+                closed="both",
+            )
+        )
+        .select(group_cols)
     )
-    return data.filter(pl.col(ColumnMapping.mastery).abs() < threshold), True
+
+
+def get_frozen_item_ids_by_correct_rate(
+    df: pl.DataFrame,
+    min_correct_rate: float = 0.1,
+    max_correct_rate: float = 0.9,
+) -> list:
+    if df.is_empty():
+        return []
+    return (
+        get_groups_outside_correct_rate_range(
+            df,
+            [ColumnMapping.estimate_question_id],
+            min_correct_rate,
+            max_correct_rate,
+        )
+        .get_column(ColumnMapping.estimate_question_id)
+        .to_list()
+    )
+
+
+def get_frozen_item_ids_by_support(
+    df: pl.DataFrame,
+    min_response: int | None = None,
+    min_student: int | None = None,
+) -> list:
+    if df.is_empty() or (min_response is None and min_student is None):
+        return []
+
+    filters = []
+    if min_response is not None:
+        filters.append(pl.col("n_response") < min_response)
+    if min_student is not None:
+        filters.append(pl.col("n_student") < min_student)
+
+    low_support_filter = filters[0]
+    for filter_expr in filters[1:]:
+        low_support_filter = low_support_filter | filter_expr
+
+    return (
+        df.group_by(ColumnMapping.estimate_question_id)
+        .agg([
+            pl.len().alias("n_response"),
+            pl.col(ColumnMapping.student_id).n_unique().alias("n_student"),
+        ])
+        .filter(low_support_filter)
+        .get_column(ColumnMapping.estimate_question_id)
+        .to_list()
+    )
+
+
+def sanitize_training_data(
+    df: pl.DataFrame,
+    mastery_group_cols: list,
+    min_obs: int,
+    min_correct_rate: float = 0.1,
+    max_correct_rate: float = 0.9,
+    item_min_correct_rate: float | None = None,
+    item_max_correct_rate: float | None = None,
+    item_min_response: int | None = None,
+    item_min_student: int | None = None,
+    max_iterations: int = 20,
+) -> tuple[pl.DataFrame, list, list[dict]]:
+    stats = []
+    if item_min_correct_rate is None:
+        item_min_correct_rate = min_correct_rate
+    if item_max_correct_rate is None:
+        item_max_correct_rate = max_correct_rate
+
+    for iteration in range(max_iterations):
+        iteration_start_rows = len(df)
+
+        steps = [
+            (
+                "mastery_min_obs",
+                lambda data: remove_groups_with_insufficient_data(
+                    data, mastery_group_cols, min_obs
+                ),
+            ),
+            (
+                "mastery_correct_rate",
+                lambda data: remove_groups_outside_correct_rate_range(
+                    data, mastery_group_cols, min_correct_rate, max_correct_rate
+                ),
+            ),
+        ]
+
+        for step_name, filter_step in steps:
+            rows_before = len(df)
+            df = filter_step(df)
+            rows_after = len(df)
+            stats.append({
+                "iteration": iteration,
+                "step": step_name,
+                "rows_before": rows_before,
+                "rows_after": rows_after,
+                "rows_removed": rows_before - rows_after,
+            })
+
+        if len(df) == iteration_start_rows:
+            correct_rate_frozen_item_ids = set(get_frozen_item_ids_by_correct_rate(
+                df,
+                item_min_correct_rate,
+                item_max_correct_rate,
+            ))
+            low_support_frozen_item_ids = set(get_frozen_item_ids_by_support(
+                df,
+                min_response=item_min_response,
+                min_student=item_min_student,
+            ))
+            frozen_item_ids = sorted(correct_rate_frozen_item_ids | low_support_frozen_item_ids)
+            stats.append({
+                "iteration": iteration,
+                "step": "item_parameter_freeze",
+                "rows_before": len(df),
+                "rows_after": len(df),
+                "rows_removed": 0,
+                "items_marked": len(frozen_item_ids),
+                "items_marked_by_correct_rate": len(correct_rate_frozen_item_ids),
+                "items_marked_by_low_support": len(low_support_frozen_item_ids),
+            })
+            return df, frozen_item_ids, stats
+
+    raise RuntimeError(
+        f"training data sanitization did not converge after {max_iterations} iterations"
+    )
 
 
 def batch_item_estimation(
-    data: pl.DataFrame, default_values=None, tune_discrimination: bool = False, **kwargs
+    data: pl.DataFrame,
+    default_values=None,
+    tune_discrimination: bool = False,
+    frozen_item_ids=None,
+    **kwargs,
 ):
     if default_values is None:
         default_values = [0.0, 1.0]
+    frozen_item_ids = set(frozen_item_ids or [])
+    kwargs = dict(kwargs)
 
-    difficulty_step_size = kwargs.get("difficulty_step_size", 0.5)
-    difficulty_limit = kwargs.get("difficulty_limit", (-3.0, 3.0))
+    # Per-iteration step-size trust regions retained for stability.
+    # Absolute *_limit ceilings dropped; only hard floor is discrimination > 0.
+    discrimination_lower = 1e-6
+    difficulty_step_size = kwargs.pop("difficulty_step_size", 0.5)
     if tune_discrimination:
-        discrimination_step_size = kwargs.get("discrimination_step_size", 0.1)
-        discrimination_limit = kwargs.get("discrimination_limit", (0.0, 1.95))
+        discrimination_step_size = kwargs.pop("discrimination_step_size", 0.2)
     else:
-        discrimination_step_size = kwargs.get("discrimination_step_size", 0.01)
-        discrimination_limit = kwargs.get("discrimination_limit", (0.95, 1.05))
-
-    def get_difficulty_bounds(d0):
-        return (
-            max(d0 - difficulty_step_size, difficulty_limit[0]),
-            min(d0 + difficulty_step_size, difficulty_limit[1]),
-        )
-
-    def get_discrimination_bounds(v0):
-        return (
-            max(v0 * (1 - discrimination_step_size), discrimination_limit[0]),
-            min(v0 * (1 + discrimination_step_size), discrimination_limit[1]),
+        discrimination_step_size = kwargs.pop("discrimination_step_size", 0.01)
+    if discrimination_step_size < 0:
+        raise ValueError(
+            f"discrimination_step_size must be non-negative, got {discrimination_step_size}"
         )
 
     def func(df: pl.DataFrame) -> pl.DataFrame:
-        m = df[ColumnMapping.mastery].to_numpy().astype(np.float64)
-        r = df[ColumnMapping.score].to_numpy().astype(np.float64)
+        item_id = df[ColumnMapping.estimate_question_id][0]
         d0 = float(df[ColumnMapping.difficulty].mean())
         v0 = float(df[ColumnMapping.discrimination].mean())
+        if item_id in frozen_item_ids:
+            return pl.DataFrame({
+                ColumnMapping.estimate_question_id: [item_id],
+                "success": [1.0],
+                ColumnMapping.difficulty: [d0],
+                ColumnMapping.discrimination: [v0],
+                ITEM_PARAMETER_FROZEN_COL: [True],
+            })
+        if v0 < discrimination_lower:
+            v0 = discrimination_lower * 10
+        m = df[ColumnMapping.mastery].to_numpy().astype(np.float64)
+        r = df[ColumnMapping.score].to_numpy().astype(np.float64)
         call_kwargs = dict(kwargs)
-        difficulty_bounds = get_difficulty_bounds(d0)
-        discrimination_bounds = get_discrimination_bounds(v0)
         call_kwargs.update({
             "x0": [d0, v0],
             "method": "L-BFGS-B",
             "bounds": optimize.Bounds(
-                [difficulty_bounds[0], discrimination_bounds[0]],
-                [difficulty_bounds[1], discrimination_bounds[1]],
+                [
+                    d0 - difficulty_step_size,
+                    max(v0 - discrimination_step_size, discrimination_lower),
+                ],
+                [
+                    d0 + difficulty_step_size,
+                    v0 + discrimination_step_size,
+                ],
                 keep_feasible=True,
             ),
         })
         opt_results = estimate_item(m, r, **call_kwargs)
         return pl.DataFrame({
-            ColumnMapping.estimate_question_id: [df[ColumnMapping.estimate_question_id][0]],
+            ColumnMapping.estimate_question_id: [item_id],
             "success": [float(opt_results.success)],
             ColumnMapping.difficulty: [float(opt_results.x[0])],
             ColumnMapping.discrimination: [float(opt_results.x[1])],
+            ITEM_PARAMETER_FROZEN_COL: [False],
         })
 
     df_res = data.group_by(ColumnMapping.estimate_question_id).map_groups(func)
@@ -298,7 +381,12 @@ def batch_item_estimation(
 
     cols = [
         col for col in data.columns
-        if col not in ["success", ColumnMapping.difficulty, ColumnMapping.discrimination]
+        if col not in [
+            "success",
+            ColumnMapping.difficulty,
+            ColumnMapping.discrimination,
+            ITEM_PARAMETER_FROZEN_COL,
+        ]
     ]
 
     return data.select(cols).join(df_res, on=ColumnMapping.estimate_question_id, how="inner")
@@ -311,18 +399,13 @@ def batch_mastery_estimation(
     default_value: float = 0.0,
     **kwargs,
 ):
+    # Per-iteration step-size trust region retained for stability.
+    # Absolute mastery_limit ceiling dropped; trust region floats with m0.
     mastery_step_size = kwargs.get("mastery_step_size", 1.0)
-    mastery_limit = kwargs.get("mastery_limit", (-5.0, 5.0))
 
     group_cols = [ColumnMapping.student_id, granularity_col]
     if using_window_col:
         group_cols.append(ColumnMapping.window_index)
-
-    def set_bounds(m0):
-        return (
-            max(m0 - mastery_step_size, mastery_limit[0]),
-            min(m0 + mastery_step_size, mastery_limit[1]),
-        )
 
     def func(df: pl.DataFrame) -> pl.DataFrame:
         d = df[ColumnMapping.difficulty].to_numpy().astype(np.float64)
@@ -332,7 +415,7 @@ def batch_mastery_estimation(
         call_kwargs = dict(kwargs)
         call_kwargs.update({
             "method": "bounded",
-            "bounds": set_bounds(m0),
+            "bounds": (m0 - mastery_step_size, m0 + mastery_step_size),
         })
         opt_results = estimate_mastery(d, v, r, **call_kwargs)
         row = {col: [df[col][0]] for col in group_cols}
@@ -360,3 +443,7 @@ def total_likelihood(df: pl.DataFrame) -> float:
     v = df[ColumnMapping.discrimination].to_numpy().astype(np.float64)
     r = df[ColumnMapping.score].to_numpy().astype(np.float64)
     return float(likelihood(m, d, v, r))
+
+
+def likelihood_denominator(df: pl.DataFrame) -> float:
+    return float(len(df))
