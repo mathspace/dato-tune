@@ -86,3 +86,14 @@ Results are saved to `result_folder/<outfile-suffix>/` as defined in `config.ini
 To deterministically sample students from the Mathspace data before inference, set
 `[inference] student_sample_rate` in `config.ini` to a value between `0.0` and
 `1.0`. A value of `1.0` leaves the dataset unchanged. Lantern data is never sampled.
+
+### Run Propagation Parameter Estimation
+
+Estimate propagation weighting parameters using response data:
+
+```bash
+uv run propagation_parameters_estimation/main.py estimate \
+  --curriculum-id 15 \
+  --infile lantern_responses.csv \
+  --outfile propagation_parameters.csv
+```
