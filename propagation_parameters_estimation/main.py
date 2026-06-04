@@ -8,7 +8,12 @@ from typing import BinaryIO
 import polars as pl
 from rich.logging import RichHandler
 
-from propagation_parameters_estimation.optimise import get_wls_parameter_rows
+from propagation_parameters_estimation.graph import (
+    SOURCE_NODE_COL,
+    TARGET_NODE_COL,
+    get_reachable_node_pairs,
+)
+from propagation_parameters_estimation.optimise import get_wls_parameter_result
 from propagation_parameters_estimation.updates import get_student_estimation_models
 
 STUDENT_COL = "STUDENT_ID"
@@ -38,6 +43,10 @@ RESPONSE_READ_COLUMNS = [
     DIFFICULTY_COL,
     DISCRIMINATION_COL,
     RESULT_COL,
+]
+SKILL_LINK_READ_COLUMNS = [
+    SOURCE_NODE_COL,
+    TARGET_NODE_COL,
 ]
 
 PROGRESS_INTERVAL = 100_000
@@ -108,6 +117,7 @@ def prepare_response_data(
 def get_wls_parameters(
     student_estimation_models: dict[str, dict[str, dict[str, float]]],
     *,
+    allowed_node_pairs: set[tuple[str, str]],
     min_shared_students: int = 2,
     min_source_variance: float = 1e-8,
     progress_interval: int = PAIR_PROGRESS_INTERVAL,
@@ -125,25 +135,38 @@ def get_wls_parameters(
             pair_fits_processed, total_pair_fits, progress_interval
         ):
             logging.info(
-                "Fit WLS parameters for %s/%s unordered node pairs",
+                "Fit WLS parameters for %s/%s directed node pairs",
                 pair_fits_processed,
                 total_pair_fits,
             )
 
-    parameter_rows = get_wls_parameter_rows(
+    parameter_result = get_wls_parameter_result(
         student_estimation_models,
+        allowed_node_pairs=allowed_node_pairs,
         min_shared_students=min_shared_students,
         min_source_variance=min_source_variance,
         stats_progress_callback=log_stats_progress,
         pair_progress_callback=log_pair_progress,
     )
+    logging.info(
+        "Used default WLS parameters for %s/%s directed node pairs",
+        parameter_result.default_count,
+        len(parameter_result.parameter_rows),
+    )
     return pl.DataFrame(
-        parameter_rows,
+        parameter_result.parameter_rows,
         schema={
             "source_node": pl.Utf8,
             "target_node": pl.Utf8,
             "L": pl.Float64,
             "C": pl.Float64,
+            "default_reason": pl.Utf8,
+            "shared_students": pl.UInt32,
+            "invalid_input_count": pl.UInt32,
+            "invalid_uncertainty_count": pl.UInt32,
+            "source_variance": pl.Float64,
+            "weight_sum": pl.Float64,
+            "denominator": pl.Float64,
         },
         orient="row",
     )
@@ -152,6 +175,7 @@ def get_wls_parameters(
 def estimate_propagation_parameters(
     responses: pl.DataFrame,
     *,
+    skill_links: pl.DataFrame,
     curriculum_id: int | None = None,
     min_shared_students: int = 2,
     min_source_variance: float = 1e-8,
@@ -181,9 +205,15 @@ def estimate_propagation_parameters(
         progress_interval=progress_interval,
         total_responses=prepared_responses.height,
     )
+    allowed_node_pairs = get_reachable_node_pairs(skill_links)
+    logging.info(
+        "Prepared %s reachable directed node pairs from skill links",
+        len(allowed_node_pairs),
+    )
     logging.info("Fitting WLS parameters for %s students", len(student_estimation_models))
     return get_wls_parameters(
         student_estimation_models,
+        allowed_node_pairs=allowed_node_pairs,
         min_shared_students=min_shared_students,
         min_source_variance=min_source_variance,
         progress_interval=pair_progress_interval,
@@ -204,6 +234,10 @@ def read_response_csv(
     return pl.read_csv(source, columns=get_response_read_columns(curriculum_id))
 
 
+def read_skill_links_csv(infile: str) -> pl.DataFrame:
+    return pl.read_csv(infile, columns=SKILL_LINK_READ_COLUMNS)
+
+
 def write_parameters_csv(parameters: pl.DataFrame, outfile: str):
     if outfile == "-":
         sys.stdout.write(parameters.write_csv())
@@ -213,8 +247,10 @@ def write_parameters_csv(parameters: pl.DataFrame, outfile: str):
 
 def run_estimate(args: argparse.Namespace):
     responses = read_response_csv(args.infile, curriculum_id=args.curriculum_id)
+    skill_links = read_skill_links_csv(args.skill_links_infile)
     parameters = estimate_propagation_parameters(
         responses,
+        skill_links=skill_links,
         curriculum_id=args.curriculum_id,
         min_shared_students=args.min_shared_students,
         min_source_variance=args.min_source_variance,
@@ -230,6 +266,7 @@ def main():
 
     estimate_parser = subparsers.add_parser("estimate")
     _ = estimate_parser.add_argument("--infile", type=str, default="-")
+    _ = estimate_parser.add_argument("--skill-links-infile", type=str, required=True)
     _ = estimate_parser.add_argument("--outfile", type=str, default="-")
     _ = estimate_parser.add_argument("--curriculum-id", type=int)
     _ = estimate_parser.add_argument("--min-shared-students", type=int, default=2)

@@ -1,6 +1,6 @@
 import math
 from collections.abc import Callable
-from itertools import combinations
+from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
@@ -16,9 +16,43 @@ _STATS_WEIGHTED_SOURCE_SUM = 4
 _STATS_WEIGHTED_TARGET_SUM = 5
 _STATS_WEIGHTED_SOURCE_SQUARE_SUM = 6
 _STATS_WEIGHTED_SOURCE_TARGET_SUM = 7
-_STATS_INVALID = 8
-_WLS_STATS_SIZE = 9
+_STATS_INVALID_INPUT_COUNT = 8
+_STATS_INVALID_UNCERTAINTY_COUNT = 9
+_WLS_STATS_SIZE = 10
 _ProgressCallback = Callable[[int, int], None]
+WLSParameterRow = tuple[
+    str,
+    str,
+    float,
+    float,
+    str | None,
+    int,
+    int,
+    int,
+    float | None,
+    float | None,
+    float | None,
+]
+
+
+@dataclass(frozen=True)
+class WLSFitResult:
+    L: float
+    C: float
+    default_reason: str | None
+    shared_students: int
+    invalid_input_count: int
+    invalid_uncertainty_count: int
+    source_variance: float | None
+    weight_sum: float | None
+    denominator: float | None
+
+
+@dataclass(frozen=True)
+class WLSParameterResult:
+    parameter_rows: list[WLSParameterRow]
+    default_count: int
+    fit_count: int
 
 
 def optimise_wls_coefficients(
@@ -80,26 +114,58 @@ def _optimise_wls_coefficients_from_stats(
     stats: list[float] | None,
     min_shared_students: int = 2,
     min_source_variance: float = 1e-8,
-) -> dict[str, float]:
+) -> WLSFitResult:
     if stats is None:
-        return {"L": DEFAULT_L, "C": DEFAULT_C}
-    if stats[_STATS_INVALID] > 0.0:
-        return {"L": DEFAULT_L, "C": DEFAULT_C}
+        return _default_wls_fit_result("missing_pair_stats")
 
-    count = stats[_STATS_COUNT]
+    count = int(stats[_STATS_COUNT])
+    invalid_input_count = int(stats[_STATS_INVALID_INPUT_COUNT])
+    invalid_uncertainty_count = int(stats[_STATS_INVALID_UNCERTAINTY_COUNT])
+    if invalid_input_count > 0:
+        return _default_wls_fit_result(
+            "non_finite_input",
+            shared_students=count,
+            invalid_input_count=invalid_input_count,
+            invalid_uncertainty_count=invalid_uncertainty_count,
+        )
+    if invalid_uncertainty_count > 0:
+        return _default_wls_fit_result(
+            "non_positive_uncertainty",
+            shared_students=count,
+            invalid_input_count=invalid_input_count,
+            invalid_uncertainty_count=invalid_uncertainty_count,
+        )
     if count < min_shared_students:
-        return {"L": DEFAULT_L, "C": DEFAULT_C}
+        return _default_wls_fit_result(
+            "insufficient_shared_students",
+            shared_students=count,
+            invalid_input_count=invalid_input_count,
+            invalid_uncertainty_count=invalid_uncertainty_count,
+        )
 
     source_mean = stats[_STATS_SOURCE_SUM] / count
     source_variance = (
         stats[_STATS_SOURCE_SQUARE_SUM] / count - source_mean * source_mean
     )
     if not math.isfinite(source_variance) or source_variance < min_source_variance:
-        return {"L": DEFAULT_L, "C": DEFAULT_C}
+        return _default_wls_fit_result(
+            "insufficient_source_variance",
+            shared_students=count,
+            invalid_input_count=invalid_input_count,
+            invalid_uncertainty_count=invalid_uncertainty_count,
+            source_variance=source_variance,
+        )
 
     weight_sum = stats[_STATS_WEIGHT_SUM]
     if not math.isfinite(weight_sum) or weight_sum <= 0.0:
-        return {"L": DEFAULT_L, "C": DEFAULT_C}
+        return _default_wls_fit_result(
+            "non_positive_weight_sum",
+            shared_students=count,
+            invalid_input_count=invalid_input_count,
+            invalid_uncertainty_count=invalid_uncertainty_count,
+            source_variance=source_variance,
+            weight_sum=weight_sum,
+        )
 
     weighted_source_mean = stats[_STATS_WEIGHTED_SOURCE_SUM] / weight_sum
     weighted_target_mean = stats[_STATS_WEIGHTED_TARGET_SUM] / weight_sum
@@ -110,7 +176,15 @@ def _optimise_wls_coefficients_from_stats(
         / weight_sum
     )
     if not math.isfinite(denominator) or denominator < min_source_variance:
-        return {"L": DEFAULT_L, "C": DEFAULT_C}
+        return _default_wls_fit_result(
+            "insufficient_denominator",
+            shared_students=count,
+            invalid_input_count=invalid_input_count,
+            invalid_uncertainty_count=invalid_uncertainty_count,
+            source_variance=source_variance,
+            weight_sum=weight_sum,
+            denominator=denominator,
+        )
 
     numerator = (
         stats[_STATS_WEIGHTED_SOURCE_TARGET_SUM]
@@ -121,23 +195,92 @@ def _optimise_wls_coefficients_from_stats(
     C = numerator / denominator
     L = weighted_target_mean - C * weighted_source_mean
     if not math.isfinite(L) or not math.isfinite(C):
-        return {"L": DEFAULT_L, "C": DEFAULT_C}
+        return _default_wls_fit_result(
+            "non_finite_coefficients",
+            shared_students=count,
+            invalid_input_count=invalid_input_count,
+            invalid_uncertainty_count=invalid_uncertainty_count,
+            source_variance=source_variance,
+            weight_sum=weight_sum,
+            denominator=denominator,
+        )
 
-    return {"L": float(L), "C": float(C)}
+    return WLSFitResult(
+        L=float(L),
+        C=float(C),
+        default_reason=None,
+        shared_students=count,
+        invalid_input_count=invalid_input_count,
+        invalid_uncertainty_count=invalid_uncertainty_count,
+        source_variance=float(source_variance),
+        weight_sum=float(weight_sum),
+        denominator=float(denominator),
+    )
+
+
+def _default_wls_fit_result(
+    default_reason: str,
+    *,
+    shared_students: int = 0,
+    invalid_input_count: int = 0,
+    invalid_uncertainty_count: int = 0,
+    source_variance: float | None = None,
+    weight_sum: float | None = None,
+    denominator: float | None = None,
+) -> WLSFitResult:
+    return WLSFitResult(
+        L=DEFAULT_L,
+        C=DEFAULT_C,
+        default_reason=default_reason,
+        shared_students=shared_students,
+        invalid_input_count=invalid_input_count,
+        invalid_uncertainty_count=invalid_uncertainty_count,
+        source_variance=source_variance,
+        weight_sum=weight_sum,
+        denominator=denominator,
+    )
 
 
 def get_wls_parameter_rows(
     student_estimation_models: dict[str, dict[str, dict[str, float]]],
     *,
+    allowed_node_pairs: set[tuple[str, str]],
     min_shared_students: int = 2,
     min_source_variance: float = 1e-8,
     stats_progress_callback: _ProgressCallback | None = None,
     pair_progress_callback: _ProgressCallback | None = None,
-) -> list[tuple[str, str, float, float]]:
+) -> list[WLSParameterRow]:
+    result = get_wls_parameter_result(
+        student_estimation_models,
+        allowed_node_pairs=allowed_node_pairs,
+        min_shared_students=min_shared_students,
+        min_source_variance=min_source_variance,
+        stats_progress_callback=stats_progress_callback,
+        pair_progress_callback=pair_progress_callback,
+    )
+    return result.parameter_rows
+
+
+def get_wls_parameter_result(
+    student_estimation_models: dict[str, dict[str, dict[str, float]]],
+    *,
+    allowed_node_pairs: set[tuple[str, str]],
+    min_shared_students: int = 2,
+    min_source_variance: float = 1e-8,
+    stats_progress_callback: _ProgressCallback | None = None,
+    pair_progress_callback: _ProgressCallback | None = None,
+) -> WLSParameterResult:
     sorted_nodes = sorted(
         {node for node_models in student_estimation_models.values() for node in node_models}
     )
     node_to_index = {node: index for index, node in enumerate(sorted_nodes)}
+    allowed_pair_indexes = _get_allowed_pair_indexes(
+        node_to_index,
+        allowed_node_pairs,
+    )
+    allowed_target_indexes_by_source = _get_allowed_target_indexes_by_source(
+        allowed_pair_indexes
+    )
     stats = np.zeros(
         (_WLS_STATS_SIZE, len(sorted_nodes), len(sorted_nodes)),
         dtype=np.float64,
@@ -146,97 +289,140 @@ def get_wls_parameter_rows(
     for students_processed, node_models in enumerate(
         student_estimation_models.values(), start=1
     ):
-        _accumulate_student_wls_stats(stats, node_to_index, node_models)
+        _accumulate_student_wls_stats(
+            stats,
+            node_to_index,
+            node_models,
+            allowed_target_indexes_by_source,
+        )
 
         if stats_progress_callback is not None:
             stats_progress_callback(students_processed, total_students)
 
-    parameter_rows: list[tuple[str, str, float, float]] = []
-    total_pair_fits = len(sorted_nodes) * (len(sorted_nodes) - 1) // 2
-    for pair_fits_processed, (source_node, target_node) in enumerate(
-        combinations(sorted_nodes, 2), start=1
+    parameter_rows: list[WLSParameterRow] = []
+    default_count = 0
+    total_pair_fits = len(allowed_pair_indexes)
+    for pair_fits_processed, (source_index, target_index) in enumerate(
+        allowed_pair_indexes, start=1
     ):
-        source_index = node_to_index[source_node]
-        target_index = node_to_index[target_node]
-        coeffs = _optimise_wls_coefficients_from_stats(
+        source_node = sorted_nodes[source_index]
+        target_node = sorted_nodes[target_index]
+        fit = _optimise_wls_coefficients_from_stats(
             stats[:, source_index, target_index],
             min_shared_students=min_shared_students,
             min_source_variance=min_source_variance,
         )
-        reverse_coeffs = _optimise_wls_coefficients_from_stats(
-            stats[:, target_index, source_index],
-            min_shared_students=min_shared_students,
-            min_source_variance=min_source_variance,
-        )
-        parameter_rows.append(
-            (source_node, target_node, float(coeffs["L"]), float(coeffs["C"]))
-        )
+        if fit.default_reason is not None:
+            default_count += 1
         parameter_rows.append(
             (
-                target_node,
                 source_node,
-                float(reverse_coeffs["L"]),
-                float(reverse_coeffs["C"]),
+                target_node,
+                fit.L,
+                fit.C,
+                fit.default_reason,
+                fit.shared_students,
+                fit.invalid_input_count,
+                fit.invalid_uncertainty_count,
+                fit.source_variance,
+                fit.weight_sum,
+                fit.denominator,
             )
         )
         if pair_progress_callback is not None:
             pair_progress_callback(pair_fits_processed, total_pair_fits)
 
-    return parameter_rows
+    return WLSParameterResult(
+        parameter_rows=parameter_rows,
+        default_count=default_count,
+        fit_count=len(parameter_rows) - default_count,
+    )
 
 
 def _accumulate_student_wls_stats(
     stats: NDArray[np.float64],
     node_to_index: dict[str, int],
     node_models: dict[str, dict[str, float]],
+    allowed_target_indexes_by_source: dict[int, frozenset[int]],
 ):
     if len(node_models) < 2:
         return
 
-    indexes = np.fromiter(
-        (node_to_index[node] for node in node_models),
-        dtype=np.int64,
-        count=len(node_models),
-    )
-    means = np.fromiter(
-        (model["mean"] for model in node_models.values()),
-        dtype=np.float64,
-        count=len(node_models),
-    )
-    stds = np.fromiter(
-        (model["std"] for model in node_models.values()),
-        dtype=np.float64,
-        count=len(node_models),
-    )
+    student_indexes_by_node = {
+        node_to_index[node]: model for node, model in node_models.items()
+    }
+    student_indexes = set(student_indexes_by_node)
+    for source_index, source_model in student_indexes_by_node.items():
+        target_indexes = allowed_target_indexes_by_source.get(source_index)
+        if not target_indexes:
+            continue
+        shared_target_indexes = target_indexes & student_indexes
+        if not shared_target_indexes:
+            continue
+        for target_index in shared_target_indexes:
+            _accumulate_pair_wls_stats(
+                stats[:, source_index, target_index],
+                source_model,
+                student_indexes_by_node[target_index],
+            )
 
-    index_grid = np.ix_(indexes, indexes)
-    source_means = means[:, None]
-    target_means = means[None, :]
-    source_stds = stds[:, None]
-    target_stds = stds[None, :]
-    uncertainty = source_stds * source_stds + target_stds * target_stds
-    valid = (
-        np.isfinite(source_means)
-        & np.isfinite(target_means)
-        & np.isfinite(source_stds)
-        & np.isfinite(target_stds)
-        & np.isfinite(uncertainty)
-        & (uncertainty > 0.0)
-    )
 
-    weights = np.zeros_like(uncertainty)
-    np.divide(1.0, uncertainty, out=weights, where=valid)
+def _accumulate_pair_wls_stats(
+    stats: NDArray[np.float64],
+    source_model: dict[str, float],
+    target_model: dict[str, float],
+):
+    source_mean = source_model["mean"]
+    target_mean = target_model["mean"]
+    source_std = source_model["std"]
+    target_std = target_model["std"]
+    stats[_STATS_COUNT] += 1.0
+    if not (
+        math.isfinite(source_mean)
+        and math.isfinite(target_mean)
+        and math.isfinite(source_std)
+        and math.isfinite(target_std)
+    ):
+        stats[_STATS_INVALID_INPUT_COUNT] += 1.0
+        return
 
-    stats[_STATS_COUNT][index_grid] += 1.0
-    stats[_STATS_INVALID][index_grid] += ~valid
-    stats[_STATS_SOURCE_SUM][index_grid] += source_means
-    stats[_STATS_SOURCE_SQUARE_SUM][index_grid] += source_means * source_means
-    stats[_STATS_WEIGHT_SUM][index_grid] += weights
-    stats[_STATS_WEIGHTED_SOURCE_SUM][index_grid] += weights * source_means
-    stats[_STATS_WEIGHTED_TARGET_SUM][index_grid] += weights * target_means
-    stats[_STATS_WEIGHTED_SOURCE_SQUARE_SUM][index_grid] += (
-        weights * source_means * source_means
-    )
-    stats[_STATS_WEIGHTED_SOURCE_TARGET_SUM][index_grid] += (
-        weights * source_means * target_means
-    )
+    uncertainty = source_std * source_std + target_std * target_std
+    if not math.isfinite(uncertainty) or uncertainty <= 0.0:
+        stats[_STATS_INVALID_UNCERTAINTY_COUNT] += 1.0
+        return
+
+    weight = 1.0 / uncertainty
+    stats[_STATS_SOURCE_SUM] += source_mean
+    stats[_STATS_SOURCE_SQUARE_SUM] += source_mean * source_mean
+    stats[_STATS_WEIGHT_SUM] += weight
+    stats[_STATS_WEIGHTED_SOURCE_SUM] += weight * source_mean
+    stats[_STATS_WEIGHTED_TARGET_SUM] += weight * target_mean
+    stats[_STATS_WEIGHTED_SOURCE_SQUARE_SUM] += weight * source_mean * source_mean
+    stats[_STATS_WEIGHTED_SOURCE_TARGET_SUM] += weight * source_mean * target_mean
+
+
+def _get_allowed_pair_indexes(
+    node_to_index: dict[str, int],
+    allowed_node_pairs: set[tuple[str, str]],
+) -> list[tuple[int, int]]:
+    pair_indexes = set()
+    for source_node, target_node in allowed_node_pairs:
+        if source_node not in node_to_index or target_node not in node_to_index:
+            continue
+        source_index = node_to_index[source_node]
+        target_index = node_to_index[target_node]
+        pair_indexes.add((source_index, target_index))
+        pair_indexes.add((target_index, source_index))
+    return sorted(pair_indexes)
+
+
+def _get_allowed_target_indexes_by_source(
+    allowed_pair_indexes: list[tuple[int, int]],
+) -> dict[int, frozenset[int]]:
+    target_indexes_by_source: dict[int, set[int]] = {}
+    for source_index, target_index in allowed_pair_indexes:
+        target_indexes_by_source.setdefault(source_index, set()).add(target_index)
+    return {
+        source_index: frozenset(target_indexes)
+        for source_index, target_indexes in target_indexes_by_source.items()
+    }

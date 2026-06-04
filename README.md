@@ -95,5 +95,6 @@ Estimate propagation weighting parameters using response data:
 uv run propagation_parameters_estimation/main.py estimate \
   --curriculum-id 15 \
   --infile lantern_responses.csv \
+  --skill-links-infile skill_links.csv \
   --outfile propagation_parameters.csv
 ```
