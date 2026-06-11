@@ -40,7 +40,8 @@ uv run item_estimation/main.py fetch-lantern \
   --curriculum-id 15 \
   --outfile lantern_responses.csv \
   --begin-date 2025-10-01 \
-  --end-date 2025-12-31
+  --end-date 2025-12-31 \
+  --latest-question-versions-only
 ```
 
 #### Lantern — Windowed Mode
@@ -56,8 +57,11 @@ uv run item_estimation/main.py fetch-lantern \
   --region us \
   --curriculum-id 15 \
   --outfile lantern_responses.csv \
-  --window-size 12m
+  --window-size 12m \
+  --latest-question-versions-only
 ```
+
+Use `--latest-question-versions-only` to include only public-question responses where `QUESTION_VERSION_ID` matches `LATEST_QUESTION_VERSION_ID`.
 
 #### Mathspace — Windowed Mode
 
@@ -86,3 +90,31 @@ Results are saved to `result_folder/<outfile-suffix>/` as defined in `config.ini
 To deterministically sample students from the Mathspace data before inference, set
 `[inference] student_sample_rate` in `config.ini` to a value between `0.0` and
 `1.0`. A value of `1.0` leaves the dataset unchanged. Lantern data is never sampled.
+
+### Run Propagation Parameter Estimation
+
+Estimate propagation weighting parameters using response data:
+
+```bash
+uv run propagation_parameters_estimation/main.py estimate \
+  --curriculum-id 15 \
+  --lantern-infile lantern_responses.csv \
+  --mathspace-infile mathspace_responses.csv \
+  --skill-links-infile skill_links.csv \
+  --outfile propagation_parameters.csv
+```
+
+By default, parameter fitting requires at least 10 shared students and a source
+variance/denominator of at least 0.1. Override with `--min-shared-students` or
+`--min-source-variance` if needed.
+
+Negative fitted propagation slopes are sanitised to `C = 0` before calculating
+the intercept `L`, so propagation does not invert source-node ability. Positive
+`C` values are left uncapped so large fitted slopes remain visible for analysis.
+When `C = 0`, `L` is also set to `0` because the propagation term is inactive.
+
+Individual WLS weights are capped at 5.0 by default. Fits with `C > 1.5` also
+default with reason `unstable_large_slope` when they have fewer than 30 shared
+students or a denominator below 5. Override with `--max-wls-weight`,
+`--unstable-slope-threshold`, `--unstable-slope-min-shared-students`, or
+`--unstable-slope-min-denominator` if needed.

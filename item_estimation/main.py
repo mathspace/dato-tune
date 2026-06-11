@@ -18,7 +18,7 @@ import polars as pl
 logger = logging.getLogger(__name__)
 
 from item_estimation.fetch import (
-    fetch_lantern_repsonses_range,
+    fetch_lantern_responses_range,
     fetch_lantern_responses_windowed_batched,
     fetch_mathspace_responses_windowed_batched,
 )
@@ -57,16 +57,25 @@ def run_fetch_lantern(
     end_date: date | None = None,
     max_windows: int | None = None,
     window_index: int | None = None,
+    latest_question_versions_only: bool = False,
 ):
     if window_size_months is not None:
         fetch_lantern_responses_windowed_batched(
             curriculum_id, region, window_size_months, outfile,
-            max_windows=max_windows, window_index=window_index,
+            max_windows=max_windows,
+            window_index=window_index,
+            latest_question_versions_only=latest_question_versions_only,
         )
     else:
         if begin_date is None or end_date is None:
             raise ValueError("begin_date and end_date are required when not using windowed mode")
-        df = fetch_lantern_repsonses_range(curriculum_id, region, begin_date, end_date)
+        df = fetch_lantern_responses_range(
+            curriculum_id,
+            region,
+            begin_date,
+            end_date,
+            latest_question_versions_only=latest_question_versions_only,
+        )
         with _output_file_context(outfile) as f:
             df.to_csv(f, index=False)
 
@@ -197,6 +206,11 @@ def main():
         required=False,
         help="End date (YYYY-MM-DD), required if not using --window-size",
     )
+    _ = fetch_lantern_parser.add_argument(
+        "--latest-question-versions-only",
+        action="store_true",
+        help="Only fetch rows where QUESTION_VERSION_ID equals LATEST_QUESTION_VERSION_ID.",
+    )
 
     fetch_mathspace_parser = subparsers.add_parser("fetch-mathspace")
     _add_common_fetch_args(fetch_mathspace_parser, window_required=True)
@@ -229,6 +243,7 @@ def main():
             args.end_date,
             args.max_windows,
             args.window_index,
+            args.latest_question_versions_only,
         )
     elif args.command == "fetch-mathspace":
         run_fetch_mathspace(args.outfile, args.curriculum_id, args.region, args.window_size, args.max_windows, args.window_index)
