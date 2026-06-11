@@ -75,14 +75,20 @@ def _get_snowflake_connection(region: Literal["au", "us"]) -> snowflake.connecto
         )
 
 
-def fetch_lantern_repsonses_range(
+def fetch_lantern_responses_range(
     curriculum_id: int,
     region: Literal["au", "us"],
     begin_date: date,
     end_date: date,
+    latest_question_versions_only: bool = False,
 ) -> pd.DataFrame:
     assert_type(begin_date, date)
     assert_type(end_date, date)
+    latest_question_versions_filter = (
+        "\n            AND question_version_id = latest_question_version_id"
+        if latest_question_versions_only
+        else ""
+    )
     query = dedent(f"""
         SELECT
             student_id,
@@ -93,13 +99,14 @@ def fetch_lantern_repsonses_range(
             grade_substrand_id,
             skill_id,
             cold_start_difficulty,
+            discrimination,
             result,
             created_at,
             curriculum_id,
         FROM DATA_SCIENCE.PREPROCESSING.LANTERN_RESPONSES
         WHERE created_at >= '{begin_date.isoformat()}'
             AND created_at <= '{end_date.isoformat()}'
-            AND curriculum_id = '{curriculum_id}'
+            AND curriculum_id = '{curriculum_id}'{latest_question_versions_filter}
     """)
 
     return fetch_responses_from_snowflake(curriculum_id, region, query)
@@ -125,8 +132,14 @@ def _build_lantern_windowed_query(
     window_size_months: int,
     max_windows: int | None = None,
     window_index: int | None = None,
+    latest_question_versions_only: bool = False,
 ) -> str:
     window_filter = _build_window_filter(max_windows, window_index)
+    latest_question_versions_filter = (
+        "\n            AND lr.question_version_id = lr.latest_question_version_id"
+        if latest_question_versions_only
+        else ""
+    )
     return dedent(f"""
         WITH earliest_date AS (
             SELECT MIN(created_at) as min_date
@@ -155,6 +168,7 @@ def _build_lantern_windowed_query(
             lr.grade_substrand_id,
             lr.skill_id,
             lr.cold_start_difficulty,
+            lr.discrimination,
             lr.result,
             lr.created_at,
             lr.curriculum_id,
@@ -163,7 +177,7 @@ def _build_lantern_windowed_query(
         INNER JOIN windows w
             ON lr.created_at >= w.window_start
             AND lr.created_at < w.window_end
-        WHERE lr.curriculum_id = '{curriculum_id}'
+        WHERE lr.curriculum_id = '{curriculum_id}'{latest_question_versions_filter}
     """)
 
 
@@ -175,6 +189,7 @@ def fetch_lantern_responses_windowed(
     window_index: int | None = None,
     limit: int | None = None,
     offset: int = 0,
+    latest_question_versions_only: bool = False,
 ) -> pd.DataFrame:
     """
     Fetch lantern responses with sliding window indices.
@@ -187,12 +202,20 @@ def fetch_lantern_responses_windowed(
         window_size_months: Size of each window in months
         max_windows: If set, only fetch this many windows (most recent first)
         window_index: If set, only fetch this specific window index
+        latest_question_versions_only: If set, only fetch rows where the response
+            question version is the public question's latest version
 
     Returns:
         DataFrame with responses, where each response may appear in multiple windows.
         Includes window_index column (0 = most recent window, 1 = next window back, etc.)
     """
-    query = _build_lantern_windowed_query(curriculum_id, window_size_months, max_windows, window_index)
+    query = _build_lantern_windowed_query(
+        curriculum_id,
+        window_size_months,
+        max_windows,
+        window_index,
+        latest_question_versions_only=latest_question_versions_only,
+    )
     return fetch_responses_from_snowflake(curriculum_id, region, query, limit, offset)
 
 
@@ -203,9 +226,16 @@ def fetch_lantern_responses_windowed_batched(
     outfile: str,
     max_windows: int | None = None,
     window_index: int | None = None,
+    latest_question_versions_only: bool = False,
 ) -> None:
     """Fetch all windowed lantern responses, streaming batches into a single outfile."""
-    query = _build_lantern_windowed_query(curriculum_id, window_size_months, max_windows, window_index)
+    query = _build_lantern_windowed_query(
+        curriculum_id,
+        window_size_months,
+        max_windows,
+        window_index,
+        latest_question_versions_only=latest_question_versions_only,
+    )
     _fetch_batched_to_file(region, query, outfile)
 
 

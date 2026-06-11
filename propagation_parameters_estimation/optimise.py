@@ -7,6 +7,13 @@ from numpy.typing import NDArray
 
 DEFAULT_C = 0.5
 DEFAULT_L = 0.0
+DEFAULT_MIN_SHARED_STUDENTS = 10
+DEFAULT_MIN_SOURCE_VARIANCE = 0.1
+DEFAULT_MAX_WLS_WEIGHT = 5.0
+DEFAULT_UNSTABLE_SLOPE_THRESHOLD = 1.5
+DEFAULT_UNSTABLE_SLOPE_MIN_SHARED_STUDENTS = 30
+DEFAULT_UNSTABLE_SLOPE_MIN_DENOMINATOR = 5.0
+MIN_PROPAGATION_COEFFICIENT = 0.0
 
 _STATS_COUNT = 0
 _STATS_SOURCE_SUM = 1
@@ -58,9 +65,23 @@ class WLSParameterResult:
 def optimise_wls_coefficients(
     node_pair_values: NDArray[np.float64] | None,
     reverse_pair: bool = False,
-    min_shared_students: int = 2,
-    min_source_variance: float = 1e-8,
+    min_shared_students: int = DEFAULT_MIN_SHARED_STUDENTS,
+    min_source_variance: float = DEFAULT_MIN_SOURCE_VARIANCE,
+    max_wls_weight: float = DEFAULT_MAX_WLS_WEIGHT,
+    unstable_slope_threshold: float = DEFAULT_UNSTABLE_SLOPE_THRESHOLD,
+    unstable_slope_min_shared_students: int = DEFAULT_UNSTABLE_SLOPE_MIN_SHARED_STUDENTS,
+    unstable_slope_min_denominator: float = DEFAULT_UNSTABLE_SLOPE_MIN_DENOMINATOR,
 ) -> dict[str, float]:
+    """
+    Fit weighted propagation parameters for target ability from source ability.
+
+    Negative slopes are sanitised to 0 so propagation does not invert ability
+    updates. Positive slopes are left unconstrained so large fitted C values
+    remain visible for analysis. L is recalculated after sanitising C, and is
+    set to 0 when C is 0 because the propagation term is inactive.
+    """
+    if not math.isfinite(max_wls_weight) or max_wls_weight <= 0.0:
+        raise ValueError("max_wls_weight must be positive")
     if node_pair_values is None:
         return {"L": DEFAULT_L, "C": DEFAULT_C}
     if len(node_pair_values) < min_shared_students:
@@ -90,7 +111,7 @@ def optimise_wls_coefficients(
     if np.var(mu_j) < min_source_variance:
         return {"L": DEFAULT_L, "C": DEFAULT_C}
 
-    w = 1.0 / uncertainty
+    w = np.minimum(1.0 / uncertainty, max_wls_weight)
     weight_sum = w.sum()
     if not np.isfinite(weight_sum) or weight_sum <= 0.0:
         return {"L": DEFAULT_L, "C": DEFAULT_C}
@@ -102,9 +123,19 @@ def optimise_wls_coefficients(
     if not np.isfinite(denominator) or denominator < min_source_variance:
         return {"L": DEFAULT_L, "C": DEFAULT_C}
 
-    C = np.sum(w * centered_mu_j * (mu_i - mu_i_mean)) / denominator
-    L = mu_i_mean - C * mu_j_mean
-    if not np.isfinite(L) or not np.isfinite(C):
+    raw_C = np.sum(w * centered_mu_j * (mu_i - mu_i_mean)) / denominator
+    C = max(raw_C, MIN_PROPAGATION_COEFFICIENT)
+    L = DEFAULT_L if C == MIN_PROPAGATION_COEFFICIENT else mu_i_mean - C * mu_j_mean
+    if not np.isfinite(L) or not np.isfinite(raw_C):
+        return {"L": DEFAULT_L, "C": DEFAULT_C}
+    if _is_unstable_large_slope(
+        C,
+        len(node_pair_values),
+        denominator,
+        unstable_slope_threshold,
+        unstable_slope_min_shared_students,
+        unstable_slope_min_denominator,
+    ):
         return {"L": DEFAULT_L, "C": DEFAULT_C}
 
     return {"L": float(L), "C": float(C)}
@@ -112,8 +143,11 @@ def optimise_wls_coefficients(
 
 def _optimise_wls_coefficients_from_stats(
     stats: list[float] | None,
-    min_shared_students: int = 2,
-    min_source_variance: float = 1e-8,
+    min_shared_students: int = DEFAULT_MIN_SHARED_STUDENTS,
+    min_source_variance: float = DEFAULT_MIN_SOURCE_VARIANCE,
+    unstable_slope_threshold: float = DEFAULT_UNSTABLE_SLOPE_THRESHOLD,
+    unstable_slope_min_shared_students: int = DEFAULT_UNSTABLE_SLOPE_MIN_SHARED_STUDENTS,
+    unstable_slope_min_denominator: float = DEFAULT_UNSTABLE_SLOPE_MIN_DENOMINATOR,
 ) -> WLSFitResult:
     if stats is None:
         return _default_wls_fit_result("missing_pair_stats")
@@ -192,11 +226,33 @@ def _optimise_wls_coefficients_from_stats(
         * stats[_STATS_WEIGHTED_TARGET_SUM]
         / weight_sum
     )
-    C = numerator / denominator
-    L = weighted_target_mean - C * weighted_source_mean
-    if not math.isfinite(L) or not math.isfinite(C):
+    raw_C = numerator / denominator
+    C = max(raw_C, MIN_PROPAGATION_COEFFICIENT)
+    L = (
+        DEFAULT_L
+        if C == MIN_PROPAGATION_COEFFICIENT
+        else weighted_target_mean - C * weighted_source_mean
+    )
+    if not math.isfinite(L) or not math.isfinite(raw_C):
         return _default_wls_fit_result(
             "non_finite_coefficients",
+            shared_students=count,
+            invalid_input_count=invalid_input_count,
+            invalid_uncertainty_count=invalid_uncertainty_count,
+            source_variance=source_variance,
+            weight_sum=weight_sum,
+            denominator=denominator,
+        )
+    if _is_unstable_large_slope(
+        C,
+        count,
+        denominator,
+        unstable_slope_threshold,
+        unstable_slope_min_shared_students,
+        unstable_slope_min_denominator,
+    ):
+        return _default_wls_fit_result(
+            "unstable_large_slope",
             shared_students=count,
             invalid_input_count=invalid_input_count,
             invalid_uncertainty_count=invalid_uncertainty_count,
@@ -241,12 +297,30 @@ def _default_wls_fit_result(
     )
 
 
+def _is_unstable_large_slope(
+    C: float,
+    shared_students: int,
+    denominator: float,
+    unstable_slope_threshold: float,
+    unstable_slope_min_shared_students: int,
+    unstable_slope_min_denominator: float,
+) -> bool:
+    return C > unstable_slope_threshold and (
+        shared_students < unstable_slope_min_shared_students
+        or denominator < unstable_slope_min_denominator
+    )
+
+
 def get_wls_parameter_rows(
     student_estimation_models: dict[str, dict[str, dict[str, float]]],
     *,
     allowed_node_pairs: set[tuple[str, str]],
-    min_shared_students: int = 2,
-    min_source_variance: float = 1e-8,
+    min_shared_students: int = DEFAULT_MIN_SHARED_STUDENTS,
+    min_source_variance: float = DEFAULT_MIN_SOURCE_VARIANCE,
+    max_wls_weight: float = DEFAULT_MAX_WLS_WEIGHT,
+    unstable_slope_threshold: float = DEFAULT_UNSTABLE_SLOPE_THRESHOLD,
+    unstable_slope_min_shared_students: int = DEFAULT_UNSTABLE_SLOPE_MIN_SHARED_STUDENTS,
+    unstable_slope_min_denominator: float = DEFAULT_UNSTABLE_SLOPE_MIN_DENOMINATOR,
     stats_progress_callback: _ProgressCallback | None = None,
     pair_progress_callback: _ProgressCallback | None = None,
 ) -> list[WLSParameterRow]:
@@ -255,6 +329,10 @@ def get_wls_parameter_rows(
         allowed_node_pairs=allowed_node_pairs,
         min_shared_students=min_shared_students,
         min_source_variance=min_source_variance,
+        max_wls_weight=max_wls_weight,
+        unstable_slope_threshold=unstable_slope_threshold,
+        unstable_slope_min_shared_students=unstable_slope_min_shared_students,
+        unstable_slope_min_denominator=unstable_slope_min_denominator,
         stats_progress_callback=stats_progress_callback,
         pair_progress_callback=pair_progress_callback,
     )
@@ -265,11 +343,18 @@ def get_wls_parameter_result(
     student_estimation_models: dict[str, dict[str, dict[str, float]]],
     *,
     allowed_node_pairs: set[tuple[str, str]],
-    min_shared_students: int = 2,
-    min_source_variance: float = 1e-8,
+    min_shared_students: int = DEFAULT_MIN_SHARED_STUDENTS,
+    min_source_variance: float = DEFAULT_MIN_SOURCE_VARIANCE,
+    max_wls_weight: float = DEFAULT_MAX_WLS_WEIGHT,
+    unstable_slope_threshold: float = DEFAULT_UNSTABLE_SLOPE_THRESHOLD,
+    unstable_slope_min_shared_students: int = DEFAULT_UNSTABLE_SLOPE_MIN_SHARED_STUDENTS,
+    unstable_slope_min_denominator: float = DEFAULT_UNSTABLE_SLOPE_MIN_DENOMINATOR,
     stats_progress_callback: _ProgressCallback | None = None,
     pair_progress_callback: _ProgressCallback | None = None,
 ) -> WLSParameterResult:
+    if not math.isfinite(max_wls_weight) or max_wls_weight <= 0.0:
+        raise ValueError("max_wls_weight must be positive")
+
     sorted_nodes = sorted(
         {node for node_models in student_estimation_models.values() for node in node_models}
     )
@@ -294,6 +379,7 @@ def get_wls_parameter_result(
             node_to_index,
             node_models,
             allowed_target_indexes_by_source,
+            max_wls_weight,
         )
 
         if stats_progress_callback is not None:
@@ -311,6 +397,9 @@ def get_wls_parameter_result(
             stats[:, source_index, target_index],
             min_shared_students=min_shared_students,
             min_source_variance=min_source_variance,
+            unstable_slope_threshold=unstable_slope_threshold,
+            unstable_slope_min_shared_students=unstable_slope_min_shared_students,
+            unstable_slope_min_denominator=unstable_slope_min_denominator,
         )
         if fit.default_reason is not None:
             default_count += 1
@@ -344,6 +433,7 @@ def _accumulate_student_wls_stats(
     node_to_index: dict[str, int],
     node_models: dict[str, dict[str, float]],
     allowed_target_indexes_by_source: dict[int, frozenset[int]],
+    max_wls_weight: float,
 ):
     if len(node_models) < 2:
         return
@@ -364,6 +454,7 @@ def _accumulate_student_wls_stats(
                 stats[:, source_index, target_index],
                 source_model,
                 student_indexes_by_node[target_index],
+                max_wls_weight,
             )
 
 
@@ -371,6 +462,7 @@ def _accumulate_pair_wls_stats(
     stats: NDArray[np.float64],
     source_model: dict[str, float],
     target_model: dict[str, float],
+    max_wls_weight: float,
 ):
     source_mean = source_model["mean"]
     target_mean = target_model["mean"]
@@ -391,7 +483,7 @@ def _accumulate_pair_wls_stats(
         stats[_STATS_INVALID_UNCERTAINTY_COUNT] += 1.0
         return
 
-    weight = 1.0 / uncertainty
+    weight = min(1.0 / uncertainty, max_wls_weight)
     stats[_STATS_SOURCE_SUM] += source_mean
     stats[_STATS_SOURCE_SQUARE_SUM] += source_mean * source_mean
     stats[_STATS_WEIGHT_SUM] += weight
