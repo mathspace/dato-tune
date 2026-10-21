@@ -68,4 +68,6 @@ These are threat hypotheses, not validated vulnerabilities. Priority reflects pl
 Confidence in source-established architecture is separate from confidence in live deployment or exploitability. This model incorporates an independent source architecture pass and direct reconciliation of material consumers. No application execution or live service/security configuration validation was performed. Revisit the model when the documented entry points, data recipients, permissions or deployment paths change.
 
 Repository: github.com/mathspace/dato-tune
-Version: a73b97c684c97506049768f4bae56fb85f23e1a7
+Baseline assessment: a73b97c684c97506049768f4bae56fb85f23e1a7. The eMudhra mitigation below describes this PR.
+
+Python dependency operations require uv 0.13.4 or newer to exclude compromised eMudhra trust. Where certifi is locked, require 2026.10.19 or newer. Recreate environments and rebuild/restart consumers after updating; system and custom CA stores remain separate.
