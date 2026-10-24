@@ -68,6 +68,8 @@ These are threat hypotheses, not validated vulnerabilities. Priority reflects pl
 Confidence in source-established architecture is separate from confidence in live deployment or exploitability. This model incorporates an independent source architecture pass and direct reconciliation of material consumers. No application execution or live service/security configuration validation was performed. Revisit the model when the documented entry points, data recipients, permissions or deployment paths change.
 
 Repository: github.com/mathspace/dato-tune
-Baseline assessment: a73b97c684c97506049768f4bae56fb85f23e1a7. The eMudhra mitigation below describes this PR.
+Baseline assessment: a73b97c684c97506049768f4bae56fb85f23e1a7. The dependency mitigations below describe the current dependency policy.
 
 Python dependency operations require uv 0.13.4 or newer to exclude compromised eMudhra trust. Where certifi is locked, require 2026.10.19 or newer. Recreate environments and rebuild/restart consumers after updating; system and custom CA stores remain separate.
+
+Pillow >=13.0.0 is a direct project dependency, so standard package metadata and uv both enforce the patched image decoder required for CVE-2026-112900. The project requires Python >=3.14. The one-off Pillow release cutoff has been removed now that 13.0.0 is older than the normal seven-day holdback; future releases remain eligible under that rolling policy (`pyproject.toml`, `uv.lock`). Rebuild existing environments before relying on the fix.
