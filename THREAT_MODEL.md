@@ -73,3 +73,5 @@ Baseline assessment: a73b97c684c97506049768f4bae56fb85f23e1a7. The dependency mi
 Python dependency operations require uv 0.13.4 or newer to exclude compromised eMudhra trust. Where certifi is locked, require 2026.10.19 or newer. Recreate environments and rebuild/restart consumers after updating; system and custom CA stores remain separate.
 
 Pillow >=13.0.0 is a direct project dependency, so standard package metadata and uv both enforce the patched image decoder required for CVE-2026-112900. The project requires Python >=3.14. The one-off Pillow release cutoff has been removed now that 13.0.0 is older than the normal seven-day holdback; future releases remain eligible under that rolling policy (`pyproject.toml`, `uv.lock`). Rebuild existing environments before relying on the fix.
+
+GitPython >=3.2.1 is required in project metadata and locked dependencies to address CVE-2026-114145, which allows an untrusted submodule path to write into `.git` before validation and plant executable hooks. This dependency mitigation does not establish that the current CLI exposes untrusted submodule creation (`pyproject.toml`, `uv.lock`, `item_estimation/utils.py`).
